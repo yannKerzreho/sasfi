@@ -1,0 +1,17 @@
+# Core
+numpy
+pandas
+scipy
+
+# Stat models
+arch          # GARCH — pip install arch
+
+# Deep learning (optional — LSTM)
+torch         # pip install torch  (CPU-only: pip install torch --index-url https://download.pytorch.org/whl/cpu)
+
+# Reservoir computing (optional — SAS JIT)
+jax[cpu]      # pip install "jax[cpu]"
+
+# Notebooks / exploration
+jupyter
+matplotlib
