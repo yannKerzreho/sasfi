@@ -125,22 +125,28 @@ class RNNForecaster(BaseForecaster):
     hidden_size : recurrent hidden dimension.
     n_layers    : number of stacked recurrent layers.
     lookback    : input window length.
-    n_epochs    : training epochs.
+    n_epochs    : maximum training epochs.
     lr          : Adam learning rate.
     batch_size  : mini-batch size.
+    patience    : early-stopping patience (epochs without val improvement).
+                  Set to None to disable early stopping.
+    val_frac    : fraction of windows reserved for validation (chronological
+                  split — the most recent val_frac of the training windows).
     seed        : torch manual seed.
     """
 
     def __init__(
         self,
-        cell:        str   = "lstm",
-        hidden_size: int   = 32,
-        n_layers:    int   = 1,
-        lookback:    int   = 20,
-        n_epochs:    int   = 100,
-        lr:          float = 1e-3,
-        batch_size:  int   = 64,
-        seed:        int   = 42,
+        cell:        str        = "lstm",
+        hidden_size: int        = 32,
+        n_layers:    int        = 1,
+        lookback:    int        = 20,
+        n_epochs:    int        = 500,
+        lr:          float      = 1e-3,
+        batch_size:  int        = 64,
+        patience:    int | None = 20,
+        val_frac:    float      = 0.2,
+        seed:        int        = 42,
     ):
         if not _TORCH:
             raise ImportError("RNN models require PyTorch: pip install torch")
@@ -151,10 +157,15 @@ class RNNForecaster(BaseForecaster):
         self.n_epochs    = n_epochs
         self.lr          = lr
         self.batch_size  = batch_size
+        self.patience    = patience
+        self.val_frac    = val_frac
         self.seed        = seed
         self._net: _RNNNet | None     = None
         self._horizons: list[int]     = []
         self._buf: deque | None       = None
+        # Fitted diagnostics (set after fit)
+        self.n_epochs_   = 0
+        self.best_val_loss_ = np.inf
 
     def _build_windows(self, history: np.ndarray, horizons: list[int]):
         T, L, H = len(history), self.lookback, max(horizons)
@@ -175,19 +186,64 @@ class RNNForecaster(BaseForecaster):
         self._net = _RNNNet(self.hidden_size, self.n_layers, n_h, self.cell)
 
         X, Y = self._build_windows(history, horizons)
-        if len(X) >= 4:
-            X_t = torch.from_numpy(X).unsqueeze(-1)   # (N, L, 1)
-            Y_t = torch.from_numpy(Y)
-            dl  = DataLoader(TensorDataset(X_t, Y_t),
-                             batch_size=self.batch_size, shuffle=True)
-            opt     = torch.optim.Adam(self._net.parameters(), lr=self.lr)
-            loss_fn = nn.MSELoss()
-            self._net.train()
-            for _ in range(self.n_epochs):
-                for xb, yb in dl:
-                    opt.zero_grad()
-                    loss_fn(self._net(xb), yb).backward()
-                    opt.step()
+        N    = len(X)
+
+        if N < 8:
+            self._net.eval()
+            self._buf = deque(history[-self.lookback:].tolist(), maxlen=self.lookback)
+            return self
+
+        # ── chronological train / val split ──────────────────────────────
+        use_es   = (self.patience is not None) and (N >= 10)
+        val_size = max(1, min(int(N * self.val_frac), N - 4)) if use_es else 0
+        n_train  = N - val_size
+
+        X_tr = torch.from_numpy(X[:n_train]).unsqueeze(-1)   # (N_tr, L, 1)
+        Y_tr = torch.from_numpy(Y[:n_train])
+        dl   = DataLoader(TensorDataset(X_tr, Y_tr),
+                          batch_size=self.batch_size, shuffle=True)
+
+        if use_es:
+            X_val = torch.from_numpy(X[n_train:]).unsqueeze(-1)
+            Y_val = torch.from_numpy(Y[n_train:])
+
+        opt     = torch.optim.Adam(self._net.parameters(), lr=self.lr)
+        loss_fn = nn.MSELoss()
+
+        best_val   = np.inf
+        best_state = None
+        no_improve = 0
+
+        self._net.train()
+        for epoch in range(1, self.n_epochs + 1):
+            # ── one epoch on training set ─────────────────────────────────
+            for xb, yb in dl:
+                opt.zero_grad()
+                loss_fn(self._net(xb), yb).backward()
+                opt.step()
+
+            # ── early stopping check on val set ───────────────────────────
+            if use_es:
+                self._net.eval()
+                with torch.no_grad():
+                    val_loss = float(loss_fn(self._net(X_val), Y_val))
+                self._net.train()
+
+                if val_loss < best_val - 1e-6:
+                    best_val   = val_loss
+                    best_state = {k: v.clone() for k, v in self._net.state_dict().items()}
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                    if no_improve >= self.patience:
+                        break
+
+        self.n_epochs_      = epoch
+        self.best_val_loss_ = best_val if use_es else np.nan
+
+        # Restore best-validation weights
+        if best_state is not None:
+            self._net.load_state_dict(best_state)
 
         self._net.eval()
         self._buf = deque(history[-self.lookback:].tolist(), maxlen=self.lookback)

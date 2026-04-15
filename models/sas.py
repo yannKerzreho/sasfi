@@ -138,7 +138,9 @@ def _step_once(basis, s, z):
 # Ridge helpers (pure NumPy — fast for typical training sizes ~500 × 100)
 # ══════════════════════════════════════════════════════════════════════════════
 
-_ALPHAS = [1e-3, 1e-2, 0.1, 1.0, 10.0, 100.0, 1_000.0]
+# 29 log-spaced values from 10^-3 to 10^4 — matches linear.py range.
+# Extended from [-2, 3] after exp_alpha.py showed 59% boundary hits at h=22.
+_ALPHAS = [10 ** x for x in np.arange(-4, 5.01, 0.25)]
 
 
 def _ridge_cv(S: np.ndarray, Y: np.ndarray, n_folds: int, alphas) -> float:
@@ -263,16 +265,18 @@ class SASForecaster(BaseForecaster):
         states_np    = np.array(states, dtype=np.float32)   # (T, n)
         self._s_last = np.array(s_last, dtype=np.float32)   # (n,)
 
-        n       = self.n_reservoir
-        self._W = {}
+        n            = self.n_reservoir
+        self._W      = {}
+        self.alpha_log_: dict[int, float] = {}
         for h in horizons:
             S = states_np[self.washout: T - h]
             Y = history  [self.washout + h: T]
             if len(S) < 5:
                 self._W[h] = np.zeros(n, dtype=np.float32)
                 continue
-            alpha      = _ridge_cv(S, Y, self.n_cv_folds, self.alphas)
-            self._W[h] = _ridge_fit(S, Y, alpha).astype(np.float32)
+            alpha            = _ridge_cv(S, Y, self.n_cv_folds, self.alphas)
+            self._W[h]       = _ridge_fit(S, Y, alpha).astype(np.float32)
+            self.alpha_log_[h] = alpha
 
         return self
 
