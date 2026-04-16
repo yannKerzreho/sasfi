@@ -1,32 +1,45 @@
 """
-experiments/exp_sas.py — SAS hyperparameter sweep.
+experiments/exp_sas.py — SAS hyperparameter sweep (multi-symbol).
 
-Goal: find the best SAS configuration to compete with NLinear (MSE≈0.52)
-on .AEX rv5 data.
+Goal: identify the best SAS variant to compete with HAR/NLinear across assets.
+
+Grid (10 SAS configs)
+---------------------
+  Diagonal basis — O(n) per step, stable for any n:
+    diag_n100_sn{0.80,0.90,0.95,0.99}      : degree-1, varying spectral norm
+    diag_n200_sn{0.90,0.95}                 : larger reservoir, degree-1
+    diag_p2_n100_sn{0.90,0.95}              : degree-2 input polynomial
+
+  Augmented SAS (reservoir + HAR features, guaranteed ≥ HAR quality):
+    aug_n100_sn{0.90,0.95}                  : fallback for h=22 stability
+
+  No degree > 2: degree-1 consistently outperforms degree-2 empirically.
+  Linear/Trigo bases excluded: O(n²) cost + catastrophic overfit in sweep.
+
+Baselines
+---------
+  HAR, HAR_Ridge  (always included — the main reference for this paper)
 
 Protocol
 --------
-Rolling OOS with window=500, refit every 252 steps.
-HAR is always included as the reference baseline.
+Rolling OOS: window=500, refit_freq=252.
+Runs on all symbols by default (--symbols all).
+Results: mean ± std MSE table + MCS frequency table.
 
-Grid
-----
-  basis          : diagonal (stable), linear (n≤200, may overfit),
-                   trigo (trig features, n≤100)
-  n_reservoir    : 50–1000 (diagonal), 50–100 (linear/trigo)
-  spectral_norm  : 0.80, 0.90, 0.95, 0.99
-  p_degree       : 1, 2  (polynomial degree for P(z))
-  washout        : 25, 50, 100
-  K (ensemble)   : 1, 5
-  augmented (HAR): True, False
+Usage
+-----
+    python experiments/exp_sas.py                         # all symbols
+    python experiments/exp_sas.py --symbols .AEX .SPX    # subset
+    python experiments/exp_sas.py --symbols .AEX          # quick check
 
-All polynomials are JAX pytrees — passed directly to the JIT parallel scan.
 Results saved to experiments/results_sas.csv.
-Run from repo root: python experiments/exp_sas.py
+Run from repo root.
 """
 
 from __future__ import annotations
 import sys
+import time
+import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -34,176 +47,206 @@ import pandas as pd
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from data.data_loader      import load_rv, fit_scaler, apply_scaler
-from models.linear         import HARForecaster
-from models.sas            import SASForecaster, SASEnsemble, AugSASForecaster
-from models.sas_utils      import DiagonalPoly, LinearPoly, TrigoPoly
+from experiments.utils import (
+    quick_oos, mean_losses, print_mse_table, print_mcs_frequency,
+    _sq_errors_to_eval_df, HORIZONS, WINDOW, REFIT_FREQ,
+)
+from data.data_loader import load_rv, available_symbols
+from models.linear    import HARForecaster
+from models.sas       import SASForecaster, AugSASForecaster
+from models.sas_utils import DiagonalPoly
 
-HORIZONS    = [1, 5, 22]
-WINDOW      = 500
-REFIT_FREQ  = 252
+CSV         = ROOT / "rv.csv"
+DEFAULT_SYM = ".AEX"
 
-
-# ── lightweight rolling OOS ───────────────────────────────────────────────────
-
-def quick_oos(log_values, dates, models_dict, max_steps=None):
-    """Returns dict {name: {h: [sq_errors]}}."""
-    T     = len(log_values)
-    H_max = max(HORIZONS)
-    mu, sigma = 0.0, 1.0
-    steps_since_refit = {n: REFIT_FREQ for n in models_dict}
-    losses = {n: {h: [] for h in HORIZONS} for n in models_dict}
-
-    limit = (WINDOW + max_steps) if max_steps else (T - H_max)
-
-    for t in range(WINDOW, min(limit, T - H_max)):
-        train_raw = log_values[t - WINDOW: t]
-
-        for name, model in models_dict.items():
-            if steps_since_refit[name] >= REFIT_FREQ:
-                mu, sigma = fit_scaler(train_raw)
-                train_z   = apply_scaler(train_raw, mu, sigma)
-                try:
-                    model.fit(train_z, HORIZONS)
-                    steps_since_refit[name] = 0
-                except Exception as e:
-                    print(f"  [fit {name}] {e}")
-
-        z_t = apply_scaler(float(log_values[t]), mu, sigma)
-
-        for name, model in models_dict.items():
-            for h in HORIZONS:
-                if t + h >= T:
-                    continue
-                z_target = apply_scaler(float(log_values[t + h]), mu, sigma)
-                try:
-                    y_hat = float(model.predict(h))
-                    losses[name][h].append((y_hat - z_target) ** 2)
-                except Exception as e:
-                    print(f"  [pred {name}] {e}")
-
-        for name, model in models_dict.items():
-            try:
-                model.update(z_t)
-                steps_since_refit[name] += 1
-            except Exception as e:
-                print(f"  [upd {name}] {e}")
-
-    return {n: {h: np.mean(v) if v else np.nan
-                for h, v in hd.items()}
-            for n, hd in losses.items()}
+# Ordered list for display (baselines first, then SAS variants sorted by family)
+_MODEL_ORDER = [
+    "HAR", "HAR_Ridge",
+    "diag_n100_sn0.80", "diag_n100_sn0.90", "diag_n100_sn0.95", "diag_n100_sn0.99",
+    "diag_n200_sn0.90", "diag_n200_sn0.95",
+    "diag_p2_n100_sn0.90", "diag_p2_n100_sn0.95",
+    "aug_n100_sn0.90", "aug_n100_sn0.95",
+]
 
 
-# ── grid ─────────────────────────────────────────────────────────────────────
+def build_grid() -> list[tuple[str, callable]]:
+    """
+    Return list of (name, factory_fn) pairs.
+    Factory functions are called fresh for each symbol to avoid state leakage.
+    """
+    configs: list[tuple[str, callable]] = []
 
-def build_grid():
-    configs = []
-
-    # ── Baselines ────────────────────────────────────────────────────────────
+    # ── Baselines ─────────────────────────────────────────────────────────
     configs.append(("HAR",       lambda: HARForecaster(ridge=False)))
     configs.append(("HAR_Ridge", lambda: HARForecaster(ridge=True)))
 
-    # ── Diagonal basis — O(n) per step, any n ───────────────────────────────
-    # p_degree=1 (linear modulation of eigenvalues)
-    for n in [100, 200, 500]:
-        for sn in [0.90, 0.95, 0.99]:
-            tag = f"diag_p1_n{n}_sn{sn:.2f}"
-            configs.append((tag, lambda n=n, sn=sn:
-                SASForecaster(n_reservoir=n, basis="diagonal",
-                              spectral_norm=sn, washout=50, seed=42)))
+    # ── Diagonal, degree 1, n=100 — vary spectral norm ────────────────────
+    for sn in [0.80, 0.90, 0.95, 0.99]:
+        tag = f"diag_n100_sn{sn:.2f}"
+        configs.append((tag, lambda sn=sn: SASForecaster(
+            n_reservoir=100, basis="diagonal",
+            spectral_norm=sn, washout=50, seed=42,
+        )))
 
-    # p_degree=2 (quadratic input-modulation — richer timescale dynamics)
-    for n in [100, 200]:
-        for sn in [0.90, 0.95, 0.99]:
-            tag = f"diag_p2_n{n}_sn{sn:.2f}"
-            configs.append((tag, lambda n=n, sn=sn:
-                SASForecaster(
-                    n_reservoir=n,
-                    basis=DiagonalPoly(p_degree=2, q_degree=2, spectral_norm=sn),
-                    washout=50, seed=42,
-                )))
-    
-    for n in [100, 200]:
-        for sn in [0.90, 0.95, 0.99]:
-            tag = f"diag_p3_n{n}_sn{sn:.2f}"
-            configs.append((tag, lambda n=n, sn=sn:
-                SASForecaster(
-                    n_reservoir=n,
-                    basis=DiagonalPoly(p_degree=3, q_degree=3, spectral_norm=sn),
-                    washout=50, seed=42,
-                )))
+    # ── Diagonal, degree 1, n=200 — larger reservoir ──────────────────────
+    for sn in [0.90, 0.95]:
+        tag = f"diag_n200_sn{sn:.2f}"
+        configs.append((tag, lambda sn=sn: SASForecaster(
+            n_reservoir=200, basis="diagonal",
+            spectral_norm=sn, washout=50, seed=42,
+        )))
 
-    # ── Linear basis — O(n²) per step, n ≤ 200 ─────────────────────────────
-    for n in [100, 200]:
-        for sn in [0.80, 0.90, 0.95]:
-            tag = f"lin_n{n}_sn{sn:.2f}"
-            configs.append((tag, lambda n=n, sn=sn, wo=50:
-                SASForecaster(n_reservoir=n, basis="linear",
-                                spectral_norm=sn, washout=wo, seed=42)))
+    # ── Diagonal, degree 2 — richer input modulation ──────────────────────
+    for sn in [0.90, 0.95]:
+        tag = f"diag_p2_n100_sn{sn:.2f}"
+        configs.append((tag, lambda sn=sn: SASForecaster(
+            n_reservoir=100,
+            basis=DiagonalPoly(p_degree=2, q_degree=2, spectral_norm=sn),
+            washout=50, seed=42,
+        )))
 
-    # ── Trigo basis — full matrix, trig features ─────────────────────────────
-    for n in [50, 100]:
-        for sn in [0.9, 0.95]:
-            for p in [1, 2]:
-                tag = f"trigo_p{p}_n{n}_sn{sn:.2f}"
-                configs.append((tag, lambda n=n, sn=sn, p=p:
-                    SASForecaster(
-                        n_reservoir=n,
-                        basis=TrigoPoly(p_degree=p, q_degree=1, spectral_norm=sn),
-                        washout=50, seed=42,
-                    )))
-
-    # ── Ensemble (diagonal, best expected configs) ───────────────────────────
-    for n in [100, 200, 500]:
-        for sn in [0.8, 0.90, 0.95]:
-            tag = f"ens5_diag_n{n}_sn{sn:.2f}"
-            configs.append((tag, lambda n=n, sn=sn:
-                SASEnsemble(K=5, n_reservoir=n, basis="diagonal",
-                            spectral_norm=sn, washout=50, seed=0)))
-
-    # ── Augmented SAS (reservoir + HAR features) ─────────────────────────────
-    # for n in [100, 200, 500]:
-    #     for sn in [0.90, 0.95]:
-    #         tag = f"aug_diag_n{n}_sn{sn:.2f}"
-    #         configs.append((tag, lambda n=n, sn=sn:
-    #             AugSASForecaster(n_reservoir=n, basis="diagonal",
-    #                              spectral_norm=sn, washout=50, seed=42)))
+    # ── Augmented SAS (reservoir + HAR features) ──────────────────────────
+    # Guarantees readout ≥ HAR quality by construction: set reservoir weights
+    # to zero → pure HAR.  Much more stable at h=22 than pure SAS.
+    for sn in [0.90, 0.95]:
+        tag = f"aug_n100_sn{sn:.2f}"
+        configs.append((tag, lambda sn=sn: AugSASForecaster(
+            n_reservoir=100, basis="diagonal",
+            spectral_norm=sn, washout=50, seed=42,
+        )))
 
     return configs
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
+def run_one_symbol(
+    symbol: str,
+    grid:   list[tuple[str, callable]],
+) -> tuple[dict[str, dict[int, float]], dict[str, dict[int, list[float]]]]:
+    """
+    Run all configs on one symbol.
+
+    Returns
+    -------
+    mse_dict  : {model: {h: mean_mse}}
+    loss_dict : {model: {h: [sq_errors]}}  (for MCS pivot)
+    """
+    log_values, dates = load_rv(CSV, symbol=symbol, target="rv5")
+    T = len(log_values)
+    if T < WINDOW + max(HORIZONS) + 2:
+        print(f"  Skipping {symbol}: T={T}")
+        return {}, {}
+
+    print(f"  {symbol}  T={T}  — {len(grid)} configs")
+    t0 = time.time()
+
+    loss_dict: dict[str, dict[int, list[float]]] = {}
+    for i, (tag, factory) in enumerate(grid):
+        model = factory()
+        losses = quick_oos(log_values, dates, {tag: model})
+        loss_dict[tag] = losses[tag]
+        mses = mean_losses(losses)
+        avg  = float(np.nanmean([mses[tag].get(h, np.nan) for h in HORIZONS]))
+        print(f"    [{i+1:2d}/{len(grid)}] {tag:<25s} "
+              f"h1={mses[tag].get(1, np.nan):.4f}  "
+              f"h5={mses[tag].get(5, np.nan):.4f}  "
+              f"h22={mses[tag].get(22, np.nan):.4f}  "
+              f"avg={avg:.4f}")
+
+    mse_dict = {tag: {h: (float(np.mean(v)) if v else np.nan)
+                      for h, v in h_dict.items()}
+                for tag, h_dict in loss_dict.items()}
+    print(f"    done in {time.time()-t0:.1f}s")
+    return mse_dict, loss_dict
+
 
 def main():
-    print("Loading data …")
-    log_values, dates = load_rv(ROOT / "rv.csv", symbol=".AEX", target="rv5")
-    print(f"  T={len(log_values)}\n")
+    parser = argparse.ArgumentParser(
+        description="SAS hyperparameter sweep (multi-symbol)."
+    )
+    parser.add_argument(
+        "--symbols", nargs="*", default=None,
+        help=(
+            "Symbols to evaluate. Pass 'all' to use every symbol in rv.csv. "
+            f"Defaults to {DEFAULT_SYM}."
+        ),
+    )
+    parser.add_argument(
+        "--mcs-alpha", type=float, default=0.10,
+        help="MCS significance level.",
+    )
+    parser.add_argument(
+        "--mcs-nboot", type=int, default=1000,
+        help="MCS bootstrap replications.",
+    )
+    args = parser.parse_args()
 
-    grid    = build_grid()
-    records = []
+    if args.symbols is None:
+        symbols = [DEFAULT_SYM]
+    elif args.symbols == ["all"]:
+        symbols = available_symbols(CSV)
+        print(f"Using all {len(symbols)} symbols: {symbols}")
+    else:
+        symbols = args.symbols
 
-    for i, (tag, factory) in enumerate(grid):
-        print(f"[{i+1}/{len(grid)}] {tag}")
-        model  = factory()
-        result = quick_oos(log_values, dates, {tag: model})
-        row    = {"config": tag}
-        for h in HORIZONS:
-            row[f"mse_h{h}"] = result[tag][h]
-        row["mse_avg"] = float(np.nanmean([result[tag][h] for h in HORIZONS]))
-        records.append(row)
-        print(f"       h1={row['mse_h1']:.4f}  h5={row['mse_h5']:.4f}"
-              f"  h22={row['mse_h22']:.4f}  avg={row['mse_avg']:.4f}")
+    grid = build_grid()
+    print(f"\nGrid: {len(grid)} configs  ({len(grid)-2} SAS + 2 baselines)")
+    print(f"Symbols: {symbols}\n")
 
-    df = pd.DataFrame(records).sort_values("mse_avg")
+    mse_by_symbol:  dict[str, dict[str, dict[int, float]]]       = {}
+    loss_by_symbol: dict[str, dict[str, dict[int, list[float]]]] = {}
+    all_records:    list[dict] = []
+
+    for symbol in symbols:
+        print(f"\n{'═'*60}")
+        print(f"  SYMBOL: {symbol}")
+        print(f"{'═'*60}")
+        try:
+            mse_dict, loss_dict = run_one_symbol(symbol, grid)
+        except ValueError as e:
+            print(f"  Error: {e}")
+            continue
+        if not mse_dict:
+            continue
+
+        mse_by_symbol[symbol]  = mse_dict
+        loss_by_symbol[symbol] = loss_dict
+
+        for tag, h_dict in mse_dict.items():
+            row = {"symbol": symbol, "config": tag}
+            for h in HORIZONS:
+                row[f"mse_h{h}"] = h_dict.get(h, np.nan)
+            row["mse_avg"] = float(np.nanmean([h_dict.get(h, np.nan) for h in HORIZONS]))
+            all_records.append(row)
+
+    if not all_records:
+        print("\nNo results.")
+        return
+
+    # ── MSE table ─────────────────────────────────────────────────────────
+    print_mse_table(
+        mse_by_symbol,
+        horizons     = HORIZONS,
+        title        = "SAS sweep  MSE (mean ± std, window=2000)",
+        model_order  = _MODEL_ORDER,
+    )
+
+    # ── MCS frequency table ───────────────────────────────────────────────
+    # Convert loss lists → DataFrame[config, horizon, test_date, sq_err]
+    evals_by_symbol = _sq_errors_to_eval_df(loss_by_symbol)
+    print_mcs_frequency(
+        evals_by_symbol,
+        horizons      = HORIZONS,
+        alpha         = args.mcs_alpha,
+        n_boot        = args.mcs_nboot,
+        seed          = 42,
+        title         = "SAS sweep MCS frequency",
+        mse_by_symbol = mse_by_symbol,
+    )
+
+    # ── save ──────────────────────────────────────────────────────────────
+    df = pd.DataFrame(all_records)
     out = ROOT / "experiments" / "results_sas.csv"
     df.to_csv(out, index=False)
-
-    print(f"\n{'─'*70}")
-    print(f"{'Config':<35} {'h=1':>7} {'h=5':>7} {'h=22':>8} {'avg':>7}")
-    print(f"{'─'*70}")
-    for _, r in df.head(20).iterrows():
-        print(f"{r['config']:<35} {r['mse_h1']:>7.4f} {r['mse_h5']:>7.4f}"
-              f" {r['mse_h22']:>8.4f} {r['mse_avg']:>7.4f}")
     print(f"\nFull results → {out}")
 
 

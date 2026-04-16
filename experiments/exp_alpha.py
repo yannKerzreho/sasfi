@@ -45,7 +45,7 @@ from models.sas       import SASForecaster
 
 HORIZONS   = [1, 5, 22]
 WINDOW     = 2000
-REFIT_FREQ = 252
+REFIT_FREQ = 20
 CSV        = ROOT / "rv.csv"
 
 

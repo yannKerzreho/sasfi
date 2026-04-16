@@ -1,0 +1,321 @@
+%% report.tex — RV Forecasting Benchmark
+%% Compile with: pdflatex report.tex  (twice for cross-references)
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[top=2.2cm, bottom=2.2cm, left=2.5cm, right=2.5cm]{geometry}
+\usepackage{amsmath, amssymb, bm}
+\usepackage{booktabs, multirow, array}
+\usepackage[ruled, linesnumbered, noend]{algorithm2e}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{parskip}
+\usepackage{microtype}
+
+\hypersetup{colorlinks=true, linkcolor=blue!60!black, citecolor=blue!60!black}
+\newcolumntype{C}[1]{>{\centering\arraybackslash}p{#1}}
+
+%% notation shortcuts
+\newcommand{\RV}{\mathrm{RV}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\hath}{\hat{x}_{t+h}}
+\newcommand{\xt}{x_t}
+\newcommand{\st}{s_t}
+\newcommand{\odotop}{\odot}
+\newcommand{\W}{w_h}
+
+\title{\textbf{Realised Volatility Forecasting — Multi-Asset Benchmark}\\[4pt]
+       \large Direct Multi-Step Models: HAR, NLinear, DLinear, SAS, RNN}
+\author{}
+\date{\today}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\begin{document}
+\maketitle
+\vspace{-1em}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Setup}
+
+$x_t = \log \RV_t$, z-scored per rolling window $(\mu,\sigma$ frozen until refit$)$.
+Direct multi-step: one model per $h \in \{1, 5, 22\}$.
+Ridge $\alpha \in \{10^k : k \in [-4,5],\;\Delta k{=}0.25\}$ (37 values), 5-fold CV.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Models}
+
+% ── HAR ──────────────────────────────────────────────────────────────────────
+\subsection{HAR — Heterogeneous Autoregressive Model (Corsi 2009)}
+
+\textbf{Features.} Let $\bar{x}^{(w)}_t = \frac{1}{5}\sum_{k=0}^{4}x_{t-k}$
+and $\bar{x}^{(m)}_t = \frac{1}{22}\sum_{k=0}^{21}x_{t-k}$.
+
+\begin{equation}
+  \hat{x}_{t+h} = \alpha + \beta_d\,x_t + \beta_w\,\bar{x}^{(w)}_t
+                         + \beta_m\,\bar{x}^{(m)}_t
+\end{equation}
+
+\textbf{HAR-OLS}: $\min_\beta \|X\beta - y\|_2^2$.\quad
+\textbf{HAR-Ridge}: column-normalise $[x^{(d)},x^{(w)},x^{(m)}]$; penalise slopes only;
+back-transform $w = w_\text{scaled}/\sigma_\text{col}$.
+
+% ── NLinear / DLinear ─────────────────────────────────────────────────────────
+\subsection{NLinear and DLinear (Zeng et al.\ 2023)}
+
+Let $\bm{x}_t = (x_{t-L+1},\ldots,x_t)^\top \in \R^L$ be the lookback window.
+
+\textbf{NLinear.}
+\begin{equation}
+  \tilde{\bm{x}}_t = \bm{x}_t - x_t, \qquad
+  \hat{x}_{t+h} = \tilde{\bm{x}}_t^\top \W + x_t
+\end{equation}
+
+\textbf{DLinear.}
+\begin{equation}
+  \bm{\tau}_t = \mathrm{MA}_k(\bm{x}_t), \quad
+  \bm{\varsigma}_t = \bm{x}_t - \bm{\tau}_t, \qquad
+  \hat{x}_{t+h} = \begin{bmatrix}\bm{\tau}_t \\ \bm{\varsigma}_t\end{bmatrix}^\top \W
+\end{equation}
+
+% ── GARCH ─────────────────────────────────────────────────────────────────────
+\subsection{GARCH — AR($p$)-GARCH(1,1)}
+
+$x_t = \mu + \sum_{i=1}^{p} \phi_i x_{t-i} + \varepsilon_t$,\quad
+$\sigma^2_t = \omega + \alpha_{\scriptscriptstyle G}\varepsilon^2_{t-1} + \beta_{\scriptscriptstyle G}\sigma^2_{t-1}$.
+Multi-step: iterate variance recursion analytically. QMLE.
+
+% ── SAS ───────────────────────────────────────────────────────────────────────
+\subsection{SAS — State Affine System}
+
+\textbf{Diagonal basis.} $P_0,\ldots,P_p \in \R^n$,\; $Q_0,\ldots,Q_q \in \R^n$.
+
+\vspace{-0.5em}
+\begin{align}
+  P(z) &= \mathrm{clip}\!\Bigl(\sum_{d=0}^{p} P_d\,z^d,\;
+           {-1{+}\epsilon},\;{1{-}\epsilon}\Bigr) \in (-1,1)^n
+           \quad\text{[Horner's rule]} \\
+  Q(z) &= \sum_{d=0}^{q} Q_d\,z^d \in \R^n \\
+  s_t  &= P(z_t) \odot s_{t-1} + Q(z_t)
+           \label{eq:sas-rec}
+\end{align}
+
+Clipping ensures $|P(z)_i|<1$ (unconditional stability). Readout: $\hat{x}_{t+h} = s_t^\top \W$.
+
+\textbf{Associative structure.} $\ell_t = (P(z_t), Q(z_t))$. Composition rule:
+\begin{equation}
+  (A_j,\,b_j) \,\circ\, (A_i,\,b_i) \;=\;
+  \bigl(A_j \odot A_i,\;\;A_j \odot b_i + b_j\bigr)
+  \label{eq:combine}
+\end{equation}
+is associative $\Rightarrow$ parallel divide-and-conquer scan.
+
+\begin{algorithm}[H]
+\caption{Two-Level Parallel Scan — compute $s_1,\ldots,s_T$ from $z_1,\ldots,z_T$}
+\SetKwInOut{Input}{Input}\SetKwInOut{Output}{Output}
+\Input{Transitions $\ell_1,\ldots,\ell_T$;\; chunk size $B$;\; $s_0 = \bm{0}$}
+\Output{States $s_1,\ldots,s_T$;\; $s_T$}
+$K \leftarrow \lceil T/B \rceil$; pad to $KB$ \\
+\textbf{Phase 1} (vmap over $K$ chunks)\;
+\quad $\forall\,k:\;(A^\text{intra}_{k,\cdot},\,b^\text{intra}_{k,\cdot})
+\leftarrow \textsc{AssocScan}(\circ,\;\ell_{kB+1},\ldots,\ell_{(k+1)B})$ \\
+\textbf{Phase 2} (inter-chunk scan over $K$ endpoints)\;
+\quad $(A^\text{inter},\,b^\text{inter})
+\leftarrow \textsc{AssocScan}(\circ,\;(A^\text{intra}_{1,B},b^\text{intra}_{1,B}),\ldots)$ \\
+\textbf{Phase 3} (carry for chunk $k \geq 1$)\;
+\quad $c_0 = s_0$;\;
+$c_k = A^\text{inter}_{k-1} \odot s_0 + b^\text{inter}_{k-1}$ \\
+\textbf{Phase 4} (vmap over $K$ chunks)\;
+\quad $\forall\,k,j:\;s_{kB+j} = A^\text{intra}_{k,j} \odot c_k + b^\text{intra}_{k,j}$
+\end{algorithm}
+
+Depth $O(\log T)$ vs.\ $O(T)$ sequential.
+
+\textbf{Augmented SAS (AugSAS).}
+\begin{equation}
+  f_t = \bigl[s_t;\; 1,\, x_t,\, \bar{x}^{(w)}_t,\, \bar{x}^{(m)}_t\bigr]
+  \in \R^{n+4}, \qquad
+  \hat{x}_{t+h} = f_t^\top \W
+\end{equation}
+$w_h[1{:}n]=\bm{0}$ recovers HAR $\Rightarrow$ AugSAS $\geq$ HAR by construction.
+
+% ── RNN ───────────────────────────────────────────────────────────────────────
+\subsection{RNN — LSTM / GRU / LRU}
+
+Readout: $\hat{x}_{t+h} = \text{Linear}_h(h_T)$, one head per $h$.
+Training: Adam, early stopping (patience=20, val=20\% chronological).
+
+\textbf{LRU} (Orvieto et al.\ 2023):
+\begin{equation}
+  h_t = \sigma(\nu) \odot h_{t-1} + Bz_t, \qquad y_t = Ch_t,
+  \qquad \sigma(\nu) \in (0,1)^d
+\end{equation}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Evaluation Protocol}
+
+\begin{algorithm}[H]
+\caption{Rolling Out-of-Sample Evaluation}
+\SetKwInOut{Input}{Input}\SetKwInOut{Output}{Output}
+\Input{Series $x_1,\ldots,x_T$; window $W$; refit frequency $R$; horizons $\mathcal{H}$}
+\Output{Squared-error sequences $\{e^{(h)}_{t,m}\}$ for each model $m$, horizon $h$}
+$({\mu}, {\sigma}) \leftarrow (0, 1)$\;
+\For{$t = W$ \KwTo $T - \max(\mathcal{H})$}{
+  $\text{train} \leftarrow x_{t-W:t}$\;
+  \If{$t \bmod R = 0$}{
+    $(\mu,\sigma) \leftarrow \textsc{FitScaler}(\text{train})$\;
+    $\tilde{\text{train}} \leftarrow (\text{train} - \mu)/\sigma$\;
+    \ForEach{model $m$}{$m.\textsc{Fit}(\tilde{\text{train}},\,\mathcal{H})$}
+  }
+  $z_t \leftarrow (x_t - \mu)/\sigma$\;
+  \ForEach{model $m$, horizon $h \in \mathcal{H}$}{
+    $\hat{z}_{t+h} \leftarrow m.\textsc{Predict}(h)$\;
+    $e^{(h)}_{t,m} \leftarrow (\hat{z}_{t+h} - z_{t+h})^2$\;
+  }
+  \ForEach{model $m$}{$m.\textsc{Update}(z_t)$}
+}
+\end{algorithm}
+
+\textbf{Model Confidence Set (Hansen et al.\ 2011).}
+$L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol dominance.
+\begin{enumerate}\itemsep0pt
+  \item $d_{t,m} = L_{t,m} - \bar{L}_t$
+  \item $T_R = \max_m \bar{d}_m / \hat\sigma_m$ \quad ($\hat\sigma_m$: circular block bootstrap, $B$ reps)
+  \item Eliminate worst model if $p < \alpha$; repeat until $H_0$ not rejected.
+  \item Surviving set = MCS$_\alpha$.
+\end{enumerate}
+
+\textbf{MCS Frequency.} Run MCS per symbol per horizon; report $c_m^{(h)}/N$.
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Hyperparameters}
+
+\begin{table}[ht]
+\centering
+\caption{Fixed hyperparameters used in all experiments.}
+\label{tab:hyperparam}
+\begin{tabular}{llr}
+\toprule
+\textbf{Component} & \textbf{Parameter} & \textbf{Value} \\
+\midrule
+\multirow{3}{*}{Evaluation}
+  & Training window $W$    & 2\,000 \\
+  & Refit frequency $R$    & 20 steps ($\approx$1 month) \\
+  & Horizons $\mathcal{H}$ & $\{1, 5, 22\}$ days \\
+\midrule
+\multirow{2}{*}{MCS}
+  & Significance $\alpha$         & 0.10 \\
+  & Bootstrap replications $B$    & 1\,000 \\
+\midrule
+\multirow{2}{*}{HAR}
+  & Lags $(d, w, m)$ & $(1, 5, 22)$ days \\
+  & Ridge CV folds   & 5 \\
+\midrule
+\multirow{2}{*}{NLinear / DLinear}
+  & Lookback $L$      & 20 \\
+  & DLinear MA kernel & 5 \\
+\midrule
+\multirow{2}{*}{GARCH}
+  & AR lags $p$         & 5 \\
+  & Estimation          & QMLE \\
+\midrule
+\multirow{4}{*}{SAS (diagonal)}
+  & Reservoir size $n$       & 100 or 200 \\
+  & Poly degree $(p, q)$     & $(1,1)$ or $(2,2)$ \\
+  & Spectral norm constraint & $\{0.80,\,0.90,\,0.95,\,0.99\}$ \\
+  & Washout                  & 50 steps \\
+\midrule
+\multirow{5}{*}{RNN (GRU)}
+  & Hidden size     & 32 \\
+  & Layers          & 1 \\
+  & Lookback        & 20 \\
+  & Epochs (max)    & 500 \\
+  & Early stopping  & patience = 20, val = 20\% \\
+\midrule
+\multirow{2}{*}{Ridge grid}
+  & Range    & $10^k$, $k \in [-4, 5]$ \\
+  & Spacing  & $\Delta k = 0.25$ (37 values) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\section{Results}
+
+\subsection{Main Benchmark — All Models, 30 Symbols ($W{=}2000$, $R{=}20$)}
+
+\begin{table}[ht]
+\centering
+\small
+\caption{Out-of-sample MSE (mean $\pm$ std, 30 Oxford-Man symbols, target log-RV$_5$, sorted by Avg).}
+\label{tab:mse-main}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & $h=1$ & $h=5$ & $h=22$ & \textbf{Avg} \\
+\midrule
+\textbf{HAR}      & 0.400 $\pm$ 0.072 & 0.510 $\pm$ 0.094 & \textbf{0.689 $\pm$ 0.138} & \textbf{0.533} \\
+HAR-Ridge         & 0.400 $\pm$ 0.072 & 0.510 $\pm$ 0.094 & 0.692 $\pm$ 0.143 & 0.534 \\
+\textbf{SAS$_\text{diag}$} & \textbf{0.397 $\pm$ 0.071} & \textbf{0.508 $\pm$ 0.093} & 0.708 $\pm$ 0.164 & 0.537 \\
+DLinear           & 0.400 $\pm$ 0.072 & 0.512 $\pm$ 0.094 & 0.700 $\pm$ 0.148 & 0.538 \\
+NLinear           & 0.403 $\pm$ 0.074 & 0.520 $\pm$ 0.098 & 0.717 $\pm$ 0.151 & 0.547 \\
+SAS$_\text{aug}$  & 0.402 $\pm$ 0.070 & 0.514 $\pm$ 0.096 & 0.724 $\pm$ 0.160 & 0.547 \\
+GARCH             & 0.410 $\pm$ 0.074 & 0.546 $\pm$ 0.098 & 0.831 $\pm$ 0.188 & 0.596 \\
+\midrule
+\multicolumn{5}{l}{\small SAS$_\text{diag}$: \texttt{diag\_n200\_sn0.95};\quad
+                          SAS$_\text{aug}$: \texttt{aug\_n100\_sn0.90}}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\small
+\caption{MCS$_{0.10}$ frequency (row-normalised losses): \#symbols where model survived the best set.
+         Sorted by Total/90.}
+\label{tab:mcs-main}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Model} & $h=1$ & $h=5$ & $h=22$ & \textbf{Total/90} & \textbf{Avg MSE} \\
+\midrule
+HAR              & 27/30 (90\%) & 29/30 (97\%) & 30/30 (100\%) & 86 & 0.533 \\
+HAR-Ridge        & 27/30 (90\%) & 24/30 (80\%) & 27/30  (90\%) & 78 & 0.534 \\
+SAS$_\text{aug}$ & 28/30 (93\%) & 17/30 (57\%) &  7/30  (23\%) & 52 & 0.547 \\
+SAS$_\text{diag}$& 23/30 (77\%) & 16/30 (53\%) &  7/30  (23\%) & 46 & 0.537 \\
+DLinear          & 11/30 (37\%) &  5/30 (17\%) &  3/30  (10\%) & 19 & 0.538 \\
+NLinear          &  0/30  (0\%) &  0/30  (0\%) &  0/30   (0\%) &  0 & 0.547 \\
+GARCH            &  0/30  (0\%) &  0/30  (0\%) &  0/30   (0\%) &  0 & 0.596 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{SAS Hyperparameter Sweep — MCS Frequency, 30 Symbols ($W{=}2000$, $R{=}20$)}
+
+Comparison set: SAS family $+$ HAR only. Higher frequencies than Table~\ref{tab:mcs-main} due to smaller, more homogeneous set.
+
+\begin{table}[ht]
+\centering
+\small
+\caption{SAS sweep: MCS$_{0.10}$ frequency (30 symbols) and mean MSE.
+         $\ddagger$ = CV$>$0.5 on $\geq$1 horizon.
+         \textbf{Bold} = configs used in main benchmark.}
+\label{tab:sas-mcs}
+\begin{tabular}{lccccr}
+\toprule
+\textbf{Model} & $h=1$ & $h=5$ & $h=22$ & \textbf{Total} & \textbf{Avg MSE} \\
+\midrule
+\textbf{diag $n{=}200$, $\rho{=}0.95$} & 30/30 & 29/30 & 30/30 & 89 & 0.537 \\
+\textbf{aug $n{=}100$, $\rho{=}0.90$}  & 30/30 & 30/30 & 27/30 & 87 & 0.547 \\
+aug $n{=}100$, $\rho{=}0.95$           & 30/30 & 30/30 & 29/30 & 89 & 0.557 \\
+diag $n{=}200$, $\rho{=}0.90$          & 30/30 & 30/30 & 27/30 & 87 & 0.564 \\
+diag $n{=}100$, $\rho{=}0.90$          & 29/30 & 30/30 & 26/30 & 85 & 0.572 \\
+diag $n{=}100$, $\rho{=}0.99$          & 20/30 & 20/30 & 18/30 & 58 & — \\
+HAR-Ridge                              &  5/30 & 14/30 & 26/30 & 45 & 0.534 \\
+HAR                                    &  5/30 & 14/30 & 25/30 & 44 & 0.533 \\
+diag $n{=}100$, $\rho{=}0.95$ $\ddagger$ & 30/30 & 30/30 & 30/30 & 90 & 0.582 \\
+diag $p{=}2$, $\rho{=}0.95$            & 14/30 & 16/30 &  7/30 & 37 & 0.560 \\
+diag $p{=}2$, $\rho{=}0.90$            &  8/30 & 13/30 &  8/30 & 29 & 0.572 \\
+diag $n{=}100$, $\rho{=}0.80$          & 12/30 &  9/30 &  5/30 & 26 & 0.649 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}

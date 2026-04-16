@@ -19,7 +19,7 @@ Fixed:
 
 Protocol
 --------
-Rolling OOS with window=500, refit every 252 steps.
+Rolling OOS with window=2000, refit every 200 steps (RNN training is expensive).
 HAR included as a reference baseline (not affected by RNN params).
 
 Usage
@@ -52,7 +52,7 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 from experiments.utils import (
-    quick_oos, mean_losses, print_table, HORIZONS, WINDOW, REFIT_FREQ
+    quick_oos, mean_losses, print_table, HORIZONS, WINDOW
 )
 from data.data_loader import load_rv, available_symbols
 from models.linear    import HARForecaster
@@ -60,10 +60,11 @@ from models.rnn       import RNNForecaster
 
 # ── grid ─────────────────────────────────────────────────────────────────────
 
-CELLS     = ["lstm", "gru", "lru"]
-HIDDENS   = [16, 32, 64, 128]
-N_LAYERS  = [1, 2]
-LOOKBACKS = [10, 20, 40]
+CELLS      = ["lstm", "gru", "lru"]
+HIDDENS    = [16, 32, 64, 128]
+N_LAYERS   = [1, 2]
+LOOKBACKS  = [10, 20, 40]
+REFIT_FREQ = 200   # RNN refit is expensive; 200 steps ≈ ~10 months between refits
 
 CSV         = ROOT / "rv.csv"
 DEFAULT_SYM = ".AEX"
@@ -114,7 +115,8 @@ def run_one_symbol(symbol: str) -> list[dict]:
 
     for i, (tag, model) in enumerate(configs):
         t1 = time.time()
-        losses  = quick_oos(log_values, dates, {tag: model})
+        losses  = quick_oos(log_values, dates, {tag: model},
+                            refit_freq=REFIT_FREQ)
         results = mean_losses(losses)
         row = {"symbol": symbol, "config": tag}
         for h in HORIZONS:

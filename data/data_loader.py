@@ -70,7 +70,10 @@ def load_rv(
     if log_transform:
         values = np.log(np.maximum(values, clip_lower))
 
-    return values, series.index
+    # Always return a tz-naive DatetimeIndex regardless of CSV index format.
+    # utc=True handles mixed-timezone rows; then tz_convert strips the tz info.
+    idx = pd.to_datetime(series.index, utc=True).tz_localize(None)
+    return values, pd.DatetimeIndex(idx)
 
 
 def available_symbols(csv_path: str | Path) -> list[str]:
