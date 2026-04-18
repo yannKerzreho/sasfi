@@ -65,12 +65,28 @@ class DiagonalPoly(BasePoly):
         P[0] (base eigenvalues): uniform in (−sn, sn) — diverse timescales.
         P[k≥1] (input modulation): small normal so clip rarely activates at
                  typical z values (|z| ≤ 5 after z-scoring).
-        Q     : standard normal scaled 1/√n.
+
+        Q[k]  : scaled by 1 / (√n · sqrt((2k−1)!!)) where (2k−1)!! is the
+                 double factorial.  This approximates 1/(√n · std(z^k)) and
+                 shrinks higher-degree terms, keeping Q(z_t) injection variance
+                 roughly uniform across degrees for typical inputs.
+                 (Exact for odd k; slight overestimate for even k → conservative.)
+
+                 k=0: scale = 1/√n    (std≈1,    (−1)!!=1)
+                 k=1: scale = 1/√n    (std=1,    ( 1)!!=1)
+                 k=2: scale ≈ 0.58/√n (std≈√2,  ( 3)!!=3)
+                 k=3: scale ≈ 0.26/√n (std=√15, ( 5)!!=15)
+                 k=4: scale ≈ 0.10/√n (std≈√96, ( 7)!!=105)
         """
         sn  = self.spectral_norm
         # margin: how much headroom above sn before clip activates
         margin = max(0.005, (1.0 - sn) * 0.3)
 
+        # Keys: 1 (P₀) + p_degree (P₁…Pp) + q_degree + 1 (one slot per Q row,
+        # but we use a SINGLE call for the full Q matrix — the extra slots are
+        # intentionally unused, preserving the same split as the original code
+        # so keys[ki_Q] is identical across all q_degree values for backward
+        # compatibility.
         n_keys = self.p_degree + self.q_degree + 2
         keys   = jax.random.split(key, n_keys)
         ki     = 0
@@ -87,8 +103,36 @@ class DiagonalPoly(BasePoly):
             ki += 1
         P = jnp.stack(p_rows, axis=0)   # (p_degree+1, n)
 
-        # Q: (q_degree+1, n) — all rows same scale
-        Q = jax.random.normal(keys[ki], (self.q_degree + 1, n)) / n ** 0.5
+        # Q: (q_degree+1, n)
+        # Single key → same random draws as before for any q_degree.
+        # Base scale 1/√n matches the original q=1 code exactly (bit-for-bit).
+        # For k≥2, an additional shrinkage factor 1/sqrt((2k-1)!!) is applied
+        # to counteract the growing variance of z^k for z~N(0,1).
+        # (2k-1)!! = 1·3·5·…·(2k-1) is the double factorial; returns 1 for k≤1.
+        # This keeps Q(z_t) injection variance roughly equal across degrees,
+        # preventing state explosion for large inputs.
+        #   k=0: no extra shrinkage  — (−1)!!=1,  same as original
+        #   k=1: no extra shrinkage  — ( 1)!!=1,  same as original
+        #   k=2: ×1/√3 ≈ 0.577      — ( 3)!!=3   ← shrunk
+        #   k=3: ×1/√15 ≈ 0.258     — ( 5)!!=15  ← shrunk more
+        def _double_factorial(m: int) -> float:
+            """(2k−1)!! = 1·3·5·…·(2k−1); returns 1 for m ≤ 0."""
+            result = 1.0
+            for i in range(1, m + 1, 2):
+                result *= i
+            return result
+
+        # Use the original scalar division so that k=0,1 entries are bit-for-bit
+        # identical to the pre-shrinkage code.  Higher-degree rows are scaled down.
+        Q_raw = jax.random.normal(keys[ki], (self.q_degree + 1, n))
+        Q     = Q_raw / n ** 0.5          # (q_degree+1, n) — original scaling
+        if self.q_degree >= 2:
+            # correction[k] = 1/sqrt((2k-1)!!)  — equals 1 for k=0,1
+            correction = jnp.array([
+                1.0 / _double_factorial(2 * k - 1) ** 0.5
+                for k in range(self.q_degree + 1)
+            ])                            # (q_degree+1,) — first two entries = 1.0
+            Q = Q * correction[:, None]   # rows 0,1 unchanged; rows ≥2 shrunk
 
         obj   = DiagonalPoly(self.p_degree, self.q_degree, self.spectral_norm)
         obj.P, obj.Q = P, Q

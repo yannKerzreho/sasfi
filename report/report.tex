@@ -38,7 +38,7 @@
 \section{Setup}
 
 $x_t = \log \RV_t$, z-scored per rolling window $(\mu,\sigma$ frozen until refit$)$.
-Direct multi-step: one model per $h \in \{1, 5, 22\}$.
+Direct multi-step: one model per $h \in \{1, 5, 10\}$.
 Ridge $\alpha \in \{10^k : k \in [-4,5],\;\Delta k{=}0.25\}$ (37 values), 5-fold CV.
 
 % ─────────────────────────────────────────────────────────────────────────────
@@ -138,6 +138,48 @@ Depth $O(\log T)$ vs.\ $O(T)$ sequential.
 \end{equation}
 $w_h[1{:}n]=\bm{0}$ recovers HAR $\Rightarrow$ AugSAS $\geq$ HAR by construction.
 
+% ── Multi-Degree SAS ──────────────────────────────────────────────────────────
+\subsection{MdSAS — Multi-Degree State Affine System}
+
+\textbf{Motivation.}  In a single SAS reservoir every state dimension uses the
+same $P$-polynomial degree.  A degree-0 filter ($P = P_0$) is a pure
+exponential smoother — essentially an AR(1) memory.  A degree-1 filter
+($P = P_0 + P_1 z$) multiplies the memory decay by the current observation,
+creating an input-gated, nonlinear interaction.  These two sub-systems may
+require very different ridge penalties: the linear memory is globally stable
+while the gating term creates local heteroscedasticity.  Assigning them a
+single shared $\alpha$ forces a compromise that can under-regularise one group
+or over-regularise the other.
+
+\textbf{Architecture.}  For $D+1$ groups ($d = 0, \ldots, D$), create
+independent sub-reservoirs each of size $n$:
+\begin{equation}
+  s^{(d)}_t = P^{(d)}(z_t) \odot s^{(d)}_{t-1} + Q^{(d)}(z_t),
+  \qquad d = 0, \ldots, D.
+\end{equation}
+The concatenated state $\tilde{s}_t = [s^{(0)}_t; \ldots; s^{(D)}_t]
+\in \R^{n(D+1)}$ is the feature vector.
+
+\textbf{Block-diagonal ridge.}  The readout solves a ridge regression with a
+\emph{block-diagonal} penalty matrix
+$\Lambda = \mathrm{diag}(\alpha_0 \mathbf{I}_n, \ldots, \alpha_D \mathbf{I}_n)$,
+i.e.\ one scalar $\alpha_d$ per group.  Given the precomputed Gram matrix
+$S^\top S$, iterating over the Cartesian product of per-group grids and
+modifying only the diagonal incurs negligible overhead.
+
+\textbf{Ablation variants.}
+\begin{itemize}\itemsep1pt
+  \item \textbf{SAS$_\text{uniform}$}: standard single reservoir, $p{=}1$,
+        single $\alpha$.  Baseline.
+  \item \textbf{MdSAS$_\text{arch}$}: two sub-reservoirs $(p_0{=}0, p_1{=}1)$,
+        \emph{shared} $\alpha$.  Isolates the architectural benefit of mixing
+        degrees from the regularisation benefit.
+  \item \textbf{MdSAS$_\text{d1}$}: same architecture, \emph{per-group} $\alpha$.
+        Adds independent regularisation on top.
+  \item \textbf{MdSAS$_\text{d2}$}: three sub-reservoirs $(p_0{=}0, p_1{=}1,
+        p_2{=}2)$, per-group $\alpha$.  Tests the value of a degree-2 extension.
+\end{itemize}
+
 % ── RNN ───────────────────────────────────────────────────────────────────────
 \subsection{RNN — LSTM / GRU / LRU}
 
@@ -200,7 +242,7 @@ $L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol 
 \multirow{3}{*}{Evaluation}
   & Training window $W$    & 2\,000 \\
   & Refit frequency $R$    & 20 steps ($\approx$1 month) \\
-  & Horizons $\mathcal{H}$ & $\{1, 5, 22\}$ days \\
+  & Horizons $\mathcal{H}$ & $\{1, 5, 10\}$ days \\
 \midrule
 \multirow{2}{*}{MCS}
   & Significance $\alpha$         & 0.10 \\
@@ -231,9 +273,16 @@ $L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol 
   & Epochs (max)    & 500 \\
   & Early stopping  & patience = 20, val = 20\% \\
 \midrule
-\multirow{2}{*}{Ridge grid}
+\multirow{4}{*}{MdSAS}
+  & Groups $(D{+}1)$         & 2 (degrees 0,1) or 3 (degrees 0,1,2) \\
+  & $n$ per group            & 50 or 100 \\
+  & Spectral norm $\rho$     & $\{0.90,\,0.95\}$ \\
+  & $\alpha$ grid (grouped)  & 7-value subset ($\Delta k {=} 1.5$, 49 combos) \\
+\midrule
+\multirow{3}{*}{Ridge grid}
   & Range    & $10^k$, $k \in [-4, 5]$ \\
-  & Spacing  & $\Delta k = 0.25$ (37 values) \\
+  & Spacing (single-$\alpha$)  & $\Delta k = 0.25$, 37 values \\
+  & Spacing (grouped)         & $\Delta k = 1.5$,  7 values (49 combos/2 groups) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -241,79 +290,69 @@ $L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Results}
 
-\subsection{Main Benchmark — All Models, 30 Symbols ($W{=}2000$, $R{=}20$)}
+\subsection{HAR vs.\ SAS ($q{=}1$, $q{=}2$) — 30 Symbols, $h\in\{1,5,10\}$}
 
-\begin{table}[ht]
+% ── MSE table ────────────────────────────────────────────────────────────────
+\begin{table}[h]
 \centering
-\small
-\caption{Out-of-sample MSE (mean $\pm$ std, 30 Oxford-Man symbols, target log-RV$_5$, sorted by Avg).}
-\label{tab:mse-main}
+\caption{Out-of-sample MSE — mean $\pm$ std across 30 symbols
+         ($W{=}2000$, $R{=}20$, target: $\log\mathrm{RV}_5$, $N_{\text{sym}}{=}30$).
+         Bold: lowest mean per horizon.
+         SAS\textsubscript{q1}: $n{=}200$, $\mathrm{sn}{=}0.95$, $q{=}1$.
+         SAS\textsubscript{q2}: same but $q{=}2$ (quadratic input drive).}
+\label{tab:mse_main}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{lcccr}
+\toprule
+Model & $h=1$ & $h=5$ & $h=10$ & avg \\
+\midrule
+HAR
+  & $0.400 \pm 0.072$
+  & $0.509 \pm 0.093$
+  & $0.583 \pm 0.105$
+  & $0.497$ \\
+SAS\textsubscript{q1}
+  & $0.416 \pm 0.095$
+  & $0.533 \pm 0.196$
+  & $0.730 \pm 0.861$
+  & $0.560$ \\
+SAS\textsubscript{q2}
+  & $\mathbf{0.396 \pm 0.072}$
+  & $\mathbf{0.507 \pm 0.094}$
+  & $\mathbf{0.586 \pm 0.114}$
+  & $\mathbf{0.496}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ── MCS frequency table ───────────────────────────────────────────────────────
+\begin{table}[h]
+\centering
+\caption{Model Confidence Set (MCS, $\alpha{=}0.10$, $B{=}1000$ bootstrap replications,
+         Hansen et al.\ 2011) — frequency of inclusion in the superior set across
+         30 symbols.  A model ``survives'' the MCS if it cannot be shown to be
+         significantly worse than the best model on that symbol.}
+\label{tab:mcs_main}
+\setlength{\tabcolsep}{10pt}
 \begin{tabular}{lcccc}
 \toprule
-\textbf{Model} & $h=1$ & $h=5$ & $h=22$ & \textbf{Avg} \\
+Model & $h=1$ & $h=5$ & $h=10$ & total \\
 \midrule
-\textbf{HAR}      & 0.400 $\pm$ 0.072 & 0.510 $\pm$ 0.094 & \textbf{0.689 $\pm$ 0.138} & \textbf{0.533} \\
-HAR-Ridge         & 0.400 $\pm$ 0.072 & 0.510 $\pm$ 0.094 & 0.692 $\pm$ 0.143 & 0.534 \\
-\textbf{SAS$_\text{diag}$} & \textbf{0.397 $\pm$ 0.071} & \textbf{0.508 $\pm$ 0.093} & 0.708 $\pm$ 0.164 & 0.537 \\
-DLinear           & 0.400 $\pm$ 0.072 & 0.512 $\pm$ 0.094 & 0.700 $\pm$ 0.148 & 0.538 \\
-NLinear           & 0.403 $\pm$ 0.074 & 0.520 $\pm$ 0.098 & 0.717 $\pm$ 0.151 & 0.547 \\
-SAS$_\text{aug}$  & 0.402 $\pm$ 0.070 & 0.514 $\pm$ 0.096 & 0.724 $\pm$ 0.160 & 0.547 \\
-GARCH             & 0.410 $\pm$ 0.074 & 0.546 $\pm$ 0.098 & 0.831 $\pm$ 0.188 & 0.596 \\
-\midrule
-\multicolumn{5}{l}{\small SAS$_\text{diag}$: \texttt{diag\_n200\_sn0.95};\quad
-                          SAS$_\text{aug}$: \texttt{aug\_n100\_sn0.90}}\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[ht]
-\centering
-\small
-\caption{MCS$_{0.10}$ frequency (row-normalised losses): \#symbols where model survived the best set.
-         Sorted by Total/90.}
-\label{tab:mcs-main}
-\begin{tabular}{lccccc}
-\toprule
-\textbf{Model} & $h=1$ & $h=5$ & $h=22$ & \textbf{Total/90} & \textbf{Avg MSE} \\
-\midrule
-HAR              & 27/30 (90\%) & 29/30 (97\%) & 30/30 (100\%) & 86 & 0.533 \\
-HAR-Ridge        & 27/30 (90\%) & 24/30 (80\%) & 27/30  (90\%) & 78 & 0.534 \\
-SAS$_\text{aug}$ & 28/30 (93\%) & 17/30 (57\%) &  7/30  (23\%) & 52 & 0.547 \\
-SAS$_\text{diag}$& 23/30 (77\%) & 16/30 (53\%) &  7/30  (23\%) & 46 & 0.537 \\
-DLinear          & 11/30 (37\%) &  5/30 (17\%) &  3/30  (10\%) & 19 & 0.538 \\
-NLinear          &  0/30  (0\%) &  0/30  (0\%) &  0/30   (0\%) &  0 & 0.547 \\
-GARCH            &  0/30  (0\%) &  0/30  (0\%) &  0/30   (0\%) &  0 & 0.596 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsection{SAS Hyperparameter Sweep — MCS Frequency, 30 Symbols ($W{=}2000$, $R{=}20$)}
-
-Comparison set: SAS family $+$ HAR only. Higher frequencies than Table~\ref{tab:mcs-main} due to smaller, more homogeneous set.
-
-\begin{table}[ht]
-\centering
-\small
-\caption{SAS sweep: MCS$_{0.10}$ frequency (30 symbols) and mean MSE.
-         $\ddagger$ = CV$>$0.5 on $\geq$1 horizon.
-         \textbf{Bold} = configs used in main benchmark.}
-\label{tab:sas-mcs}
-\begin{tabular}{lccccr}
-\toprule
-\textbf{Model} & $h=1$ & $h=5$ & $h=22$ & \textbf{Total} & \textbf{Avg MSE} \\
-\midrule
-\textbf{diag $n{=}200$, $\rho{=}0.95$} & 30/30 & 29/30 & 30/30 & 89 & 0.537 \\
-\textbf{aug $n{=}100$, $\rho{=}0.90$}  & 30/30 & 30/30 & 27/30 & 87 & 0.547 \\
-aug $n{=}100$, $\rho{=}0.95$           & 30/30 & 30/30 & 29/30 & 89 & 0.557 \\
-diag $n{=}200$, $\rho{=}0.90$          & 30/30 & 30/30 & 27/30 & 87 & 0.564 \\
-diag $n{=}100$, $\rho{=}0.90$          & 29/30 & 30/30 & 26/30 & 85 & 0.572 \\
-diag $n{=}100$, $\rho{=}0.99$          & 20/30 & 20/30 & 18/30 & 58 & — \\
-HAR-Ridge                              &  5/30 & 14/30 & 26/30 & 45 & 0.534 \\
-HAR                                    &  5/30 & 14/30 & 25/30 & 44 & 0.533 \\
-diag $n{=}100$, $\rho{=}0.95$ $\ddagger$ & 30/30 & 30/30 & 30/30 & 90 & 0.582 \\
-diag $p{=}2$, $\rho{=}0.95$            & 14/30 & 16/30 &  7/30 & 37 & 0.560 \\
-diag $p{=}2$, $\rho{=}0.90$            &  8/30 & 13/30 &  8/30 & 29 & 0.572 \\
-diag $n{=}100$, $\rho{=}0.80$          & 12/30 &  9/30 &  5/30 & 26 & 0.649 \\
+HAR
+  & $7/30\ (23\%)$
+  & $13/30\ (43\%)$
+  & $13/30\ (43\%)$
+  & $33/90$ \\
+SAS\textsubscript{q1}
+  & $28/30\ (93\%)$
+  & $30/30\ (100\%)$
+  & $30/30\ (100\%)$
+  & $88/90$ \\
+SAS\textsubscript{q2}
+  & $23/30\ (77\%)$
+  & $24/30\ (80\%)$
+  & $20/30\ (67\%)$
+  & $67/90$ \\
 \bottomrule
 \end{tabular}
 \end{table}

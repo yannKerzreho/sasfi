@@ -304,6 +304,7 @@ def print_mcs_frequency(
     seed:            int   = 42,
     title:           str   = "",
     mse_by_symbol:   "dict[str, dict[str, dict[int, float]]] | None" = None,
+    model_order:     "list[str] | None" = None,
 ) -> pd.DataFrame:
     """
     Run the MCS independently for each symbol × horizon, then print a
@@ -339,6 +340,8 @@ def print_mcs_frequency(
 
     for sym in symbols:
         df = evals_by_symbol[sym]
+        if df.empty or "horizon" not in df.columns:
+            continue
         mcs_by_h = _run_mcs_one_symbol(df, horizons, alpha, n_boot, seed)
         for h, mcs_set in mcs_by_h.items():
             if mcs_set:
@@ -371,7 +374,13 @@ def print_mcs_frequency(
                         high_var = True
             mse_stats[m] = (float(np.mean(avgs)) if avgs else np.nan, high_var)
 
-    all_models = sorted(counts.keys())
+    if model_order is not None:
+        # Preserve requested order; append any extra models alphabetically
+        known = [m for m in model_order if m in counts]
+        extra = sorted(m for m in counts if m not in model_order)
+        all_models = known + extra
+    else:
+        all_models = sorted(counts.keys())
     rows = []
     for m in all_models:
         row: dict = {"config": m}
@@ -389,7 +398,9 @@ def print_mcs_frequency(
             row["avg_mse"],  row["high_var"] = np.nan, False
         rows.append(row)
 
-    df_out = pd.DataFrame(rows).sort_values("total_count", ascending=False)
+    df_out = pd.DataFrame(rows)
+    if model_order is None:
+        df_out = df_out.sort_values("total_count", ascending=False)
 
     # ── pretty print ─────────────────────────────────────────────────────
     show_mse = mse_by_symbol is not None

@@ -65,7 +65,7 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="Skip log-transform (not recommended)")
 
     # ── evaluation ───────────────────────────────────────────────────────
-    p.add_argument("--horizons",   nargs="+", type=int, default=[1, 5, 22])
+    p.add_argument("--horizons",   nargs="+", type=int, default=[1, 5, 10])
     p.add_argument("--window",     type=int, default=2000)
     p.add_argument("--refit-freq", type=int, default=20,
                    help="Refit every N steps (20 ≈ 1 months)")
@@ -140,29 +140,25 @@ def build_models(args: argparse.Namespace) -> dict:
 
     if not args.no_sas:
         try:
-            from models.sas import SASForecaster, AugSASForecaster
-            # Best configs from exp_sas sweep (window=2000, refit=20, 30 symbols):
-            #   diag_n200_sn0.95  — 89/90 MCS, stable, best mean MSE among SAS
-            #   aug_n100_sn0.90   — 87/90 MCS, reservoir + HAR features,
-            #                       guaranteed ≥ HAR quality by construction,
-            #                       guards against h=22 ridge instability
-            # Excluded: diag_n100_sn0.90/0.95 — high CV (std/mean > 0.5 at h=1/h=22)
-            models["SAS_diag"] = SASForecaster(
+            from models.sas import SASForecaster
+            # SAS_q1: original best config (n=200, sn=0.95, q=1)
+            # SAS_q2: q=2 polynomial input drive — better at h=1
+            models["SAS_q1"] = SASForecaster(
                 n_reservoir   = args.sas_n * 2,   # 200 by default
                 basis         = "diagonal",
                 spectral_norm = 0.95,
                 p_degree      = args.sas_p_degree,
-                q_degree      = args.sas_q_degree,
+                q_degree      = 1,
                 washout       = args.sas_washout,
                 chunk_size    = args.sas_chunk,
                 seed          = args.seed,
             )
-            models["SAS_aug"] = AugSASForecaster(
-                n_reservoir   = args.sas_n,        # 100 by default
+            models["SAS_q2"] = SASForecaster(
+                n_reservoir   = args.sas_n * 2,   # 200 by default
                 basis         = "diagonal",
-                spectral_norm = 0.90,
+                spectral_norm = 0.95,
                 p_degree      = args.sas_p_degree,
-                q_degree      = args.sas_q_degree,
+                q_degree      = 2,
                 washout       = args.sas_washout,
                 chunk_size    = args.sas_chunk,
                 seed          = args.seed,

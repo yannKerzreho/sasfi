@@ -138,9 +138,13 @@ def _step_once(basis, s, z):
 # Ridge helpers (pure NumPy — fast for typical training sizes ~500 × 100)
 # ══════════════════════════════════════════════════════════════════════════════
 
-# 29 log-spaced values from 10^-3 to 10^4 — matches linear.py range.
+# 37 log-spaced values from 10^-4 to 10^4 (spacing 0.25 in log10).
 # Extended from [-2, 3] after exp_alpha.py showed 59% boundary hits at h=22.
 _ALPHAS = [10 ** x for x in np.arange(-4, 5.01, 0.25)]
+
+# Coarser grid for grouped CV: every 6th value → 7 candidates.
+# 7² = 49 combos (2-group) · 7³ = 343 combos (3-group) — fast, ~spacing 1.5 log10.
+_ALPHAS_GROUPED = _ALPHAS[::6]   # spacing 1.5 in log10
 
 
 def _ridge_cv(S: np.ndarray, Y: np.ndarray, n_folds: int, alphas) -> float:
@@ -168,6 +172,90 @@ def _ridge_fit(S: np.ndarray, Y: np.ndarray, alpha: float) -> np.ndarray:
     """Ridge regression: (S.T S + αI)⁻¹ S.T Y → weight vector."""
     n = S.shape[1]
     return np.linalg.solve(S.T @ S + alpha * np.eye(n), S.T @ Y)
+
+
+def _ridge_cv_grouped(
+    S: np.ndarray,
+    Y: np.ndarray,
+    group_sizes: list,
+    n_folds: int,
+    alpha_grid_1d: list,
+) -> tuple:
+    """
+    Block-diagonal ridge CV with a different alpha per feature group.
+
+    The penalty matrix is Λ = diag(α₀·I_{g₀}, α₁·I_{g₁}, …) where group d
+    occupies columns [Σ_{k<d} g_k : Σ_{k≤d} g_k] of S.
+
+    The Gram matrix S[:cut].T @ S[:cut] is precomputed once per fold; each
+    alpha-combo then only modifies the diagonal — O(n) — before solving.
+
+    Parameters
+    ----------
+    S             : (T, n) feature matrix, columns ordered by group
+    Y             : (T,)   targets
+    group_sizes   : list of ints summing to n
+    n_folds       : rolling CV folds
+    alpha_grid_1d : 1-D alpha candidates searched independently per group
+
+    Returns
+    -------
+    best_alphas : tuple of floats, one per group
+    """
+    from itertools import product as cart_product
+
+    T, n     = S.shape
+    val_size = max(12, T // (n_folds + 1))
+    combos   = list(cart_product(alpha_grid_1d, repeat=len(group_sizes)))
+
+    # Build λ vectors once (avoid recomputing inside the inner loop)
+    lam_vecs = []
+    for combo in combos:
+        lam_vecs.append(
+            np.concatenate([a * np.ones(g) for a, g in zip(combo, group_sizes)])
+        )
+
+    sum_mse = np.full(len(combos), 0.0)
+    cnt_mse = np.zeros(len(combos), dtype=int)
+    diag_ix = np.diag_indices(n)
+
+    for fold in range(n_folds):
+        cut = T - (n_folds - fold) * val_size
+        if cut < max(5, n // 10):
+            continue
+        STS      = S[:cut].T @ S[:cut]         # (n, n) — reused per combo
+        STY      = S[:cut].T @ Y[:cut]          # (n,)
+        val_S    = S[cut: cut + val_size]
+        val_Y    = Y[cut: cut + val_size]
+        sts_diag = STS[diag_ix].copy()
+
+        for ci, lam in enumerate(lam_vecs):
+            A            = STS.copy()
+            A[diag_ix]   = sts_diag + lam
+            w            = np.linalg.solve(A, STY)
+            err          = val_S @ w - val_Y
+            sum_mse[ci] += float(np.mean(err ** 2))
+            cnt_mse[ci] += 1
+
+    valid = cnt_mse > 0
+    if not valid.any():
+        return combos[0]
+    avg = np.where(valid, sum_mse / np.maximum(cnt_mse, 1), np.inf)
+    return combos[int(np.argmin(avg))]
+
+
+def _ridge_fit_grouped(
+    S: np.ndarray,
+    Y: np.ndarray,
+    group_sizes: list,
+    alphas: tuple,
+) -> np.ndarray:
+    """Block-diagonal ridge: (S.T S + Λ)⁻¹ S.T Y."""
+    n   = S.shape[1]
+    lam = np.concatenate([a * np.ones(g) for a, g in zip(alphas, group_sizes)])
+    A   = S.T @ S
+    A[np.diag_indices(n)] += lam
+    return np.linalg.solve(A, S.T @ Y)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -443,3 +531,163 @@ class AugSASForecaster(BaseForecaster):
         har = self._har_feat()
         f   = np.concatenate([s, har])
         return float(f @ self._W[h])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MultiDegreeSASForecaster — per-degree sub-reservoirs with grouped ridge
+# ══════════════════════════════════════════════════════════════════════════════
+
+class MultiDegreeSASForecaster(BaseForecaster):
+    """
+    SAS with separate sub-reservoirs for each polynomial degree and
+    per-group ridge regularisation in the readout.
+
+    Architecture
+    ------------
+    The reservoir is split into (max_degree + 1) independent sub-reservoirs:
+
+        Group d  (d = 0 … max_degree):
+            n_per_group dimensions
+            DiagonalPoly(p_degree=d, q_degree=q_degree, spectral_norm=sn)
+
+    Group 0 (p_degree=0): *linear filter* — P is constant, transition matrix
+        does not depend on input; only Q responds to z via Q_0 + Q_1·z.
+    Group 1 (p_degree=1): *multiplicative gating* — P(z) = P_0 + P_1·z,
+        so state memory is modulated by the current input.
+    Group 2 (p_degree=2): *quadratic gating* — P(z) adds P_2·z² term.
+
+    Readout
+    -------
+    States are concatenated:  f_t = [s^(0)_t ; … ; s^(D)_t]  ∈ ℝ^{n_total}
+    Ridge penalty is block-diagonal:
+        Λ = diag(α₀·I_{n_per_group}, α₁·I_{n_per_group}, …)
+
+    Per-group alphas are selected jointly by rolling CV over a Cartesian
+    product of the 1-D alpha grid (one per group).  The Gram matrix
+    S.T @ S is precomputed once per fold; only the diagonal changes per combo
+    → efficient for moderate n_per_group.
+
+    Parameters
+    ----------
+    n_per_group   : size of each sub-reservoir. Total n = n_per_group × (max_degree+1).
+    max_degree    : highest p_degree used. Number of groups = max_degree + 1.
+    q_degree      : Q polynomial degree, same for all groups (default 1).
+    spectral_norm : spectral norm constraint, same for all groups.
+    washout       : steps discarded from the start of each training window.
+    chunk_size    : static chunk size for the two-level scan.
+    n_cv_folds    : rolling CV folds.
+    seed          : JAX PRNG seed (each group gets a different sub-key).
+    alphas_1d     : 1-D alpha candidates for grouped CV.
+                    Defaults to _ALPHAS_GROUPED (~13 values, spacing 0.75 log10).
+    """
+
+    def __init__(
+        self,
+        n_per_group:   int   = 50,
+        max_degree:    int   = 1,
+        q_degree:      int   = 1,
+        spectral_norm: float = 0.95,
+        washout:       int   = 50,
+        chunk_size:    int   = 64,
+        n_cv_folds:    int   = 3,
+        seed:          int   = 42,
+        alphas_1d            = None,
+        grouped_ridge: bool  = True,
+    ):
+        self.n_per_group   = n_per_group
+        self.max_degree    = max_degree
+        self.q_degree      = q_degree
+        self.spectral_norm = spectral_norm
+        self.washout       = washout
+        self.chunk_size    = chunk_size
+        self.n_cv_folds    = n_cv_folds
+        self.seed          = seed
+        self.alphas_1d     = list(alphas_1d) if alphas_1d is not None else _ALPHAS_GROUPED
+        self.grouped_ridge = grouped_ridge
+
+        # Uninitialised basis objects — one per degree
+        self._bases: list = [
+            DiagonalPoly(p_degree=d, q_degree=q_degree, spectral_norm=spectral_norm)
+            for d in range(max_degree + 1)
+        ]
+        self._s_lasts: list                  = []   # one (n_per_group,) per group
+        self._W:       dict[int, np.ndarray] = {}
+
+    # ── derived property ──────────────────────────────────────────────────────
+
+    @property
+    def n_reservoir(self) -> int:
+        """Total reservoir size across all groups."""
+        return self.n_per_group * (self.max_degree + 1)
+
+    @property
+    def group_sizes(self) -> list:
+        return [self.n_per_group] * (self.max_degree + 1)
+
+    # ── BaseForecaster interface ───────────────────────────────────────────────
+
+    def fit(self, history: np.ndarray, horizons: list[int]) -> "MultiDegreeSASForecaster":
+        """
+        For each group: re-init basis, run parallel scan → sub-state matrix.
+        Concatenate sub-states → block-featured design matrix.
+        Fit per-group ridge via grouped CV per horizon.
+        """
+        history = np.asarray(history, dtype=np.float32)
+        T       = len(history)
+        u       = jnp.array(history[:, None])   # (T, 1)
+
+        base_key = jax.random.PRNGKey(self.seed)
+        states_list: list[np.ndarray] = []
+        self._s_lasts = []
+
+        for d, basis in enumerate(self._bases):
+            sub_key       = jax.random.fold_in(base_key, d)
+            init_basis    = basis.initialize(self.n_per_group, sub_key)
+            self._bases[d] = init_basis
+
+            s0             = jnp.zeros(self.n_per_group)
+            states_d, s_last_d = _collect_states(
+                init_basis, u, s0, self.n_per_group, self.chunk_size
+            )
+            states_list.append(np.array(states_d,  dtype=np.float32))   # (T, n_pg)
+            self._s_lasts.append(np.array(s_last_d, dtype=np.float32))  # (n_pg,)
+
+        all_states = np.concatenate(states_list, axis=1)   # (T, n_total)
+        gsizes     = self.group_sizes
+        wo         = self.washout
+
+        self._W         = {}
+        self.alpha_log_: dict[int, object] = {}   # float (single) or tuple (grouped)
+
+        for h in horizons:
+            S = all_states[wo: T - h]
+            Y = history   [wo + h: T]
+            if len(S) < 5:
+                self._W[h] = np.zeros(self.n_reservoir, dtype=np.float32)
+                continue
+            if self.grouped_ridge:
+                best_alphas      = _ridge_cv_grouped(S, Y, gsizes, self.n_cv_folds, self.alphas_1d)
+                self._W[h]       = _ridge_fit_grouped(S, Y, gsizes, best_alphas).astype(np.float32)
+                self.alpha_log_[h] = best_alphas
+            else:
+                # Single shared alpha.  For a *fair* architecture-only comparison
+                # with the grouped variant, use the same 1-D grid; pass
+                # alphas_1d=_ALPHAS to the constructor when you want the full grid.
+                alpha            = _ridge_cv(S, Y, self.n_cv_folds, self.alphas_1d)
+                self._W[h]       = _ridge_fit(S, Y, alpha).astype(np.float32)
+                self.alpha_log_[h] = alpha
+
+        return self
+
+    def update(self, x: float) -> "MultiDegreeSASForecaster":
+        """Advance all sub-reservoir states by one step."""
+        z = jnp.array([float(x)])
+        for d, basis in enumerate(self._bases):
+            s_new          = _step_once(basis, jnp.array(self._s_lasts[d]), z)
+            self._s_lasts[d] = np.array(s_new, dtype=np.float32)
+        return self
+
+    def predict(self, h: int) -> float:
+        """Linear readout over concatenated sub-states."""
+        s = np.concatenate(self._s_lasts)
+        return float(s @ self._W[h])
