@@ -305,7 +305,7 @@ class SASForecaster(BaseForecaster):
         self.seed        = seed
         self.alphas      = list(alphas) if alphas is not None else _ALPHAS
 
-        # ── resolve basis spec → uninitialized BasePoly ───────────────────
+        # ── resolve basis spec - uninitialized BasePoly ───────────────────
         if isinstance(basis, str):
             _map = {
                 "diagonal": DiagonalPoly,
@@ -579,20 +579,36 @@ class MultiDegreeSASForecaster(BaseForecaster):
     seed          : JAX PRNG seed (each group gets a different sub-key).
     alphas_1d     : 1-D alpha candidates for grouped CV.
                     Defaults to _ALPHAS_GROUPED (~13 values, spacing 0.75 log10).
+
+    p_degrees     : explicit list of p_degree per group, e.g. [1, 1, 1].
+                    If provided, overrides the ``max_degree`` enumeration
+                    (0, 1, …, max_degree).  Length determines the number of groups.
+    q_degrees     : explicit list of q_degree per group, e.g. [1, 2, 3].
+                    If provided, overrides the scalar ``q_degree`` for every group.
+                    Must have the same length as ``p_degrees`` (or max_degree+1).
+
+    Use ``p_degrees`` / ``q_degrees`` together to build mixed-degree reservoirs:
+        # Mix q-degrees, all p=1 (n_per_group=100, total=200)
+        MultiDegreeSASForecaster(n_per_group=100, p_degrees=[1,1], q_degrees=[1,2])
+
+        # Mix p and q simultaneously
+        MultiDegreeSASForecaster(n_per_group=100, p_degrees=[0,1], q_degrees=[1,2])
     """
 
     def __init__(
         self,
-        n_per_group:   int   = 50,
-        max_degree:    int   = 1,
-        q_degree:      int   = 1,
-        spectral_norm: float = 0.95,
-        washout:       int   = 50,
-        chunk_size:    int   = 64,
-        n_cv_folds:    int   = 3,
-        seed:          int   = 42,
-        alphas_1d            = None,
-        grouped_ridge: bool  = True,
+        n_per_group:   int         = 50,
+        max_degree:    int         = 1,
+        q_degree:      int         = 1,
+        spectral_norm: float       = 0.95,
+        washout:       int         = 50,
+        chunk_size:    int         = 64,
+        n_cv_folds:    int         = 3,
+        seed:          int         = 42,
+        alphas_1d                  = None,
+        grouped_ridge: bool        = True,
+        p_degrees:     list | None = None,
+        q_degrees:     list | None = None,
     ):
         self.n_per_group   = n_per_group
         self.max_degree    = max_degree
@@ -605,24 +621,39 @@ class MultiDegreeSASForecaster(BaseForecaster):
         self.alphas_1d     = list(alphas_1d) if alphas_1d is not None else _ALPHAS_GROUPED
         self.grouped_ridge = grouped_ridge
 
-        # Uninitialised basis objects — one per degree
+        # Resolve per-group p/q degree lists
+        _p_list = list(p_degrees) if p_degrees is not None else list(range(max_degree + 1))
+        _q_list = list(q_degrees) if q_degrees is not None else [q_degree] * len(_p_list)
+        if len(_p_list) != len(_q_list):
+            raise ValueError(
+                f"p_degrees and q_degrees must have the same length, "
+                f"got {len(_p_list)} vs {len(_q_list)}"
+            )
+        self._p_list = _p_list
+        self._q_list = _q_list
+
+        # Uninitialised basis objects — one per group
         self._bases: list = [
-            DiagonalPoly(p_degree=d, q_degree=q_degree, spectral_norm=spectral_norm)
-            for d in range(max_degree + 1)
+            DiagonalPoly(p_degree=p_d, q_degree=q_d, spectral_norm=spectral_norm)
+            for p_d, q_d in zip(_p_list, _q_list)
         ]
         self._s_lasts: list                  = []   # one (n_per_group,) per group
         self._W:       dict[int, np.ndarray] = {}
 
-    # ── derived property ──────────────────────────────────────────────────────
+    # ── derived properties ────────────────────────────────────────────────────
+
+    @property
+    def n_groups(self) -> int:
+        return len(self._bases)
 
     @property
     def n_reservoir(self) -> int:
         """Total reservoir size across all groups."""
-        return self.n_per_group * (self.max_degree + 1)
+        return self.n_per_group * self.n_groups
 
     @property
     def group_sizes(self) -> list:
-        return [self.n_per_group] * (self.max_degree + 1)
+        return [self.n_per_group] * self.n_groups
 
     # ── BaseForecaster interface ───────────────────────────────────────────────
 

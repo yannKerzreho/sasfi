@@ -29,22 +29,18 @@
 \author{}
 \date{\today}
 
-% ─────────────────────────────────────────────────────────────────────────────
 \begin{document}
 \maketitle
 \vspace{-1em}
 
-% ─────────────────────────────────────────────────────────────────────────────
 \section{Setup}
 
 $x_t = \log \RV_t$, z-scored per rolling window $(\mu,\sigma$ frozen until refit$)$.
 Direct multi-step: one model per $h \in \{1, 5, 10\}$.
 Ridge $\alpha \in \{10^k : k \in [-4,5],\;\Delta k{=}0.25\}$ (37 values), 5-fold CV.
 
-% ─────────────────────────────────────────────────────────────────────────────
 \section{Models}
 
-% ── HAR ──────────────────────────────────────────────────────────────────────
 \subsection{HAR — Heterogeneous Autoregressive Model (Corsi 2009)}
 
 \textbf{Features.} Let $\bar{x}^{(w)}_t = \frac{1}{5}\sum_{k=0}^{4}x_{t-k}$
@@ -59,7 +55,6 @@ and $\bar{x}^{(m)}_t = \frac{1}{22}\sum_{k=0}^{21}x_{t-k}$.
 \textbf{HAR-Ridge}: column-normalise $[x^{(d)},x^{(w)},x^{(m)}]$; penalise slopes only;
 back-transform $w = w_\text{scaled}/\sigma_\text{col}$.
 
-% ── NLinear / DLinear ─────────────────────────────────────────────────────────
 \subsection{NLinear and DLinear (Zeng et al.\ 2023)}
 
 Let $\bm{x}_t = (x_{t-L+1},\ldots,x_t)^\top \in \R^L$ be the lookback window.
@@ -77,23 +72,21 @@ Let $\bm{x}_t = (x_{t-L+1},\ldots,x_t)^\top \in \R^L$ be the lookback window.
   \hat{x}_{t+h} = \begin{bmatrix}\bm{\tau}_t \\ \bm{\varsigma}_t\end{bmatrix}^\top \W
 \end{equation}
 
-% ── GARCH ─────────────────────────────────────────────────────────────────────
 \subsection{GARCH — AR($p$)-GARCH(1,1)}
 
 $x_t = \mu + \sum_{i=1}^{p} \phi_i x_{t-i} + \varepsilon_t$,\quad
 $\sigma^2_t = \omega + \alpha_{\scriptscriptstyle G}\varepsilon^2_{t-1} + \beta_{\scriptscriptstyle G}\sigma^2_{t-1}$.
 Multi-step: iterate variance recursion analytically. QMLE.
 
-% ── SAS ───────────────────────────────────────────────────────────────────────
 \subsection{SAS — State Affine System}
 
-\textbf{Diagonal basis.} $P_0,\ldots,P_p \in \R^n$,\; $Q_0,\ldots,Q_q \in \R^n$.
+\textbf{Diagonal basis.} $P_0,\ldots,P_p \in \R^n$,\; $Q_0,\ldots,Q_q \in \R^n$, $z\in\mathbb R$.
 
 \vspace{-0.5em}
 \begin{align}
   P(z) &= \mathrm{clip}\!\Bigl(\sum_{d=0}^{p} P_d\,z^d,\;
            {-1{+}\epsilon},\;{1{-}\epsilon}\Bigr) \in (-1,1)^n
-           \quad\text{[Horner's rule]} \\
+         \\
   Q(z) &= \sum_{d=0}^{q} Q_d\,z^d \in \R^n \\
   s_t  &= P(z_t) \odot s_{t-1} + Q(z_t)
            \label{eq:sas-rec}
@@ -155,14 +148,6 @@ $c_k = A^\text{inter}_{k-1} \odot s_0 + b^\text{inter}_{k-1}$ \\
 
 Depth $O(\log T)$ vs.\ $O(T)$ sequential.
 
-\textbf{Augmented SAS (AugSAS).}
-\begin{equation}
-  f_t = \bigl[s_t;\; 1,\, x_t,\, \bar{x}^{(w)}_t,\, \bar{x}^{(m)}_t\bigr]
-  \in \R^{n+4}, \qquad
-  \hat{x}_{t+h} = f_t^\top \W
-\end{equation}
-
-% ── RNN ───────────────────────────────────────────────────────────────────────
 \subsection{RNN — LSTM / GRU / LRU}
 
 Readout: $\hat{x}_{t+h} = \text{Linear}_h(h_T)$, one head per $h$.
@@ -174,7 +159,7 @@ Training: Adam, early stopping (patience=20, val=20\% chronological).
   \qquad \sigma(\nu) \in (0,1)^d
 \end{equation}
 
-% ─────────────────────────────────────────────────────────────────────────────
+
 \section{Evaluation Protocol}
 
 \begin{algorithm}[H]
@@ -210,7 +195,8 @@ $L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol 
 
 \textbf{MCS Frequency.} Run MCS per symbol per horizon; report $c_m^{(h)}/N$.
 
-% ─────────────────────────────────────────────────────────────────────────────
+\newpage
+
 \section{Hyperparameters}
 
 \begin{table}[ht]
@@ -270,12 +256,11 @@ $L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol 
 \end{tabular}
 \end{table}
 
-% ─────────────────────────────────────────────────────────────────────────────
+\newpage
 \section{Results}
 
 \subsection{All Models — 30 Symbols, $h\in\{1,5,10\}$}
 
-% ── MSE table ────────────────────────────────────────────────────────────────
 \begin{table}[ht]
 \centering
 \caption{Out-of-sample MSE — mean $\pm$ std across 30 symbols
@@ -375,7 +360,6 @@ GARCH
 \end{tabular}
 \end{table}
 
-% ─────────────────────────────────────────────────────────────────────────────
 \subsection{SAS Ablations — MCS Frequency ($\alpha{=}0.10$, $N_\text{stable}$ symbols)}
 
 Model naming: \texttt{q\textit{k}} = $Q$-polynomial degree $k$;
