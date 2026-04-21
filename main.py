@@ -72,7 +72,6 @@ def parse_args(argv=None) -> argparse.Namespace:
 
     # ── model toggles ────────────────────────────────────────────────────
     p.add_argument("--no-har",     action="store_true")
-    p.add_argument("--no-ridge",   action="store_true")
     p.add_argument("--no-nlinear", action="store_true")
     p.add_argument("--no-dlinear", action="store_true")
     p.add_argument("--no-garch",   action="store_true")
@@ -123,8 +122,8 @@ def build_models(args: argparse.Namespace) -> dict:
 
     if not args.no_har:
         models["HAR"]       = HARForecaster(ridge=False)
-    if not args.no_ridge:
-        models["HAR_Ridge"] = HARForecaster(ridge=True)
+    # if not args.no_ridge:
+    #     models["HAR_Ridge"] = HARForecaster(ridge=True)
     if not args.no_nlinear:
         models["NLinear"]   = NLinearForecaster(lookback=args.lookback)
     if not args.no_dlinear:

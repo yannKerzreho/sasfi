@@ -10,19 +10,27 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.3}GARCH — AR($p$)-GARCH(1,1)}{1}{subsection.2.3}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.4}SAS — State Affine System}{1}{subsection.2.4}\protected@file@percent }
 \newlabel{eq:sas-rec}{{6}{2}{SAS — State Affine System}{equation.6}{}}
-\newlabel{eq:combine}{{7}{2}{SAS — State Affine System}{equation.7}{}}
+\newlabel{eq:combine}{{8}{2}{SAS — State Affine System}{equation.8}{}}
 \@writefile{loa}{\contentsline {algocf}{\numberline {1}{\ignorespaces Two-Level Parallel Scan — compute $s_1,\ldots  ,s_T$ from $z_1,\ldots  ,z_T$}}{2}{algocf.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}MdSAS — Multi-Degree State Affine System}{2}{subsection.2.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.6}RNN — LSTM / GRU / LRU}{3}{subsection.2.6}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.5}RNN — LSTM / GRU / LRU}{3}{subsection.2.5}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {3}Evaluation Protocol}{3}{section.3}\protected@file@percent }
 \@writefile{loa}{\contentsline {algocf}{\numberline {2}{\ignorespaces Rolling Out-of-Sample Evaluation}}{3}{algocf.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {4}Hyperparameters}{4}{section.4}\protected@file@percent }
 \@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Fixed hyperparameters used in all experiments.}}{4}{table.1}\protected@file@percent }
 \newlabel{tab:hyperparam}{{1}{4}{Fixed hyperparameters used in all experiments}{table.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}Hyperparameters}{4}{section.4}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {5}Results}{4}{section.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}HAR vs.\ SAS ($q{=}1$, $q{=}2$) — 30 Symbols, $h\in \{1,5,10\}$}{4}{subsection.5.1}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Out-of-sample MSE — mean $\pm $ std across 30 symbols ($W{=}2000$, $R{=}20$, target: $\log \mathrm  {RV}_5$, $N_{\text  {sym}}{=}30$). Bold: lowest mean per horizon. SAS\textsubscript  {q1}: $n{=}200$, $\mathrm  {sn}{=}0.95$, $q{=}1$. SAS\textsubscript  {q2}: same but $q{=}2$ (quadratic input drive).}}{5}{table.2}\protected@file@percent }
-\newlabel{tab:mse_main}{{2}{5}{Out-of-sample MSE — mean $\pm $ std across 30 symbols ($W{=}2000$, $R{=}20$, target: $\log \mathrm {RV}_5$, $N_{\text {sym}}{=}30$). Bold: lowest mean per horizon. SAS\textsubscript {q1}: $n{=}200$, $\mathrm {sn}{=}0.95$, $q{=}1$. SAS\textsubscript {q2}: same but $q{=}2$ (quadratic input drive)}{table.2}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Model Confidence Set (MCS, $\alpha {=}0.10$, $B{=}1000$ bootstrap replications, Hansen et al.\ 2011) — frequency of inclusion in the superior set across 30 symbols. A model ``survives'' the MCS if it cannot be shown to be significantly worse than the best model on that symbol.}}{5}{table.3}\protected@file@percent }
-\newlabel{tab:mcs_main}{{3}{5}{Model Confidence Set (MCS, $\alpha {=}0.10$, $B{=}1000$ bootstrap replications, Hansen et al.\ 2011) — frequency of inclusion in the superior set across 30 symbols. A model ``survives'' the MCS if it cannot be shown to be significantly worse than the best model on that symbol}{table.3}{}}
-\gdef \@abspage@last{5}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}All Models — 30 Symbols, $h\in \{1,5,10\}$}{4}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}SAS Ablations — MCS Frequency ($\alpha {=}0.10$, $N_\text  {stable}$ symbols)}{4}{subsection.5.2}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Out-of-sample MSE — mean $\pm $ std across 30 symbols ($W{=}2000$, $R{=}20$, target: $\log \mathrm  {RV}_5$, $N_{\text  {sym}}{=}30$). Sorted by avg MSE. Bold: lowest mean per horizon. SAS\textsubscript  {q1/q2}: diagonal reservoir, $n{=}200$, $\rho {=}0.95$, $p{=}1$.}}{5}{table.2}\protected@file@percent }
+\newlabel{tab:mse_main}{{2}{5}{Out-of-sample MSE — mean $\pm $ std across 30 symbols ($W{=}2000$, $R{=}20$, target: $\log \mathrm {RV}_5$, $N_{\text {sym}}{=}30$). Sorted by avg MSE. Bold: lowest mean per horizon. SAS\textsubscript {q1/q2}: diagonal reservoir, $n{=}200$, $\rho {=}0.95$, $p{=}1$}{table.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Model Confidence Set (MCS, $\alpha {=}0.10$, $B{=}1000$ bootstrap replications, Hansen et al.\ 2011) — frequency of inclusion in the superior set across 30 symbols, sorted by total. A model survives if it cannot be shown to be significantly worse than the best model on that symbol.}}{5}{table.3}\protected@file@percent }
+\newlabel{tab:mcs_main}{{3}{5}{Model Confidence Set (MCS, $\alpha {=}0.10$, $B{=}1000$ bootstrap replications, Hansen et al.\ 2011) — frequency of inclusion in the superior set across 30 symbols, sorted by total. A model survives if it cannot be shown to be significantly worse than the best model on that symbol}{table.3}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Q1 — $Q$-degree sweep ($n{=}200$, $\rho {=}0.95$, $p{=}1$). Stable subset: 29/30 symbols (q3 diverged on .IBEX). Sorted by MCS total.}}{5}{table.4}\protected@file@percent }
+\newlabel{tab:mcs_q1}{{4}{5}{Q1 — $Q$-degree sweep ($n{=}200$, $\rho {=}0.95$, $p{=}1$). Stable subset: 29/30 symbols (q3 diverged on .IBEX). Sorted by MCS total}{table.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Q2 — reservoir size sweep for $q{=}2$ ($\rho {=}0.95$, $p{=}1$). Stable subset: 29/30 symbols (\texttt  {q2\_n100} diverged on .IBEX). Sorted by MCS total.}}{5}{table.5}\protected@file@percent }
+\newlabel{tab:mcs_q2}{{5}{5}{Q2 — reservoir size sweep for $q{=}2$ ($\rho {=}0.95$, $p{=}1$). Stable subset: 29/30 symbols (\texttt {q2\_n100} diverged on .IBEX). Sorted by MCS total}{table.5}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Q3 — spectral-norm sweep for $q{=}2$ ($n{=}200$, $p{=}1$). All 30 symbols stable. Sorted by MCS total.}}{5}{table.6}\protected@file@percent }
+\newlabel{tab:mcs_q3}{{6}{5}{Q3 — spectral-norm sweep for $q{=}2$ ($n{=}200$, $p{=}1$). All 30 symbols stable. Sorted by MCS total}{table.6}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Q4 — $P$-degree with $q{=}2$ ($n{=}200$, $\rho {=}0.95$). All 30 symbols stable. Sorted by MCS total.}}{6}{table.7}\protected@file@percent }
+\newlabel{tab:mcs_q4}{{7}{6}{Q4 — $P$-degree with $q{=}2$ ($n{=}200$, $\rho {=}0.95$). All 30 symbols stable. Sorted by MCS total}{table.7}{}}
+\gdef \@abspage@last{6}

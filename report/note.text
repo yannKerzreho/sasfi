@@ -1,0 +1,42 @@
+% ── Multi-Degree SAS ──────────────────────────────────────────────────────────
+\subsection{MdSAS — Multi-Degree State Affine System}
+
+\textbf{Motivation.}  In a single SAS reservoir every state dimension uses the
+same $P$-polynomial degree.  A degree-0 filter ($P = P_0$) is a pure
+exponential smoother — essentially an AR(1) memory.  A degree-1 filter
+($P = P_0 + P_1 z$) multiplies the memory decay by the current observation,
+creating an input-gated, nonlinear interaction.  These two sub-systems may
+require very different ridge penalties: the linear memory is globally stable
+while the gating term creates local heteroscedasticity.  Assigning them a
+single shared $\alpha$ forces a compromise that can under-regularise one group
+or over-regularise the other.
+
+\textbf{Architecture.}  For $D+1$ groups ($d = 0, \ldots, D$), create
+independent sub-reservoirs each of size $n$:
+\begin{equation}
+  s^{(d)}_t = P^{(d)}(z_t) \odot s^{(d)}_{t-1} + Q^{(d)}(z_t),
+  \qquad d = 0, \ldots, D.
+\end{equation}
+The concatenated state $\tilde{s}_t = [s^{(0)}_t; \ldots; s^{(D)}_t]
+\in \R^{n(D+1)}$ is the feature vector.
+
+\textbf{Block-diagonal ridge.}  The readout solves a ridge regression with a
+\emph{block-diagonal} penalty matrix
+$\Lambda = \mathrm{diag}(\alpha_0 \mathbf{I}_n, \ldots, \alpha_D \mathbf{I}_n)$,
+i.e.\ one scalar $\alpha_d$ per group.  Given the precomputed Gram matrix
+$S^\top S$, iterating over the Cartesian product of per-group grids and
+modifying only the diagonal incurs negligible overhead.
+
+\textbf{Ablation variants.}
+\begin{itemize}\itemsep1pt
+  \item \textbf{SAS$_\text{uniform}$}: standard single reservoir, $p{=}1$,
+        single $\alpha$.  Baseline.
+  \item \textbf{MdSAS$_\text{arch}$}: two sub-reservoirs $(p_0{=}0, p_1{=}1)$,
+        \emph{shared} $\alpha$.  Isolates the architectural benefit of mixing
+        degrees from the regularisation benefit.
+  \item \textbf{MdSAS$_\text{d1}$}: same architecture, \emph{per-group} $\alpha$.
+        Adds independent regularisation on top.
+  \item \textbf{MdSAS$_\text{d2}$}: three sub-reservoirs $(p_0{=}0, p_1{=}1,
+        p_2{=}2)$, per-group $\alpha$.  Tests the value of a degree-2 extension.
+\end{itemize}
+

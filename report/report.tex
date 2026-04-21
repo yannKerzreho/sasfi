@@ -99,7 +99,32 @@ Multi-step: iterate variance recursion analytically. QMLE.
            \label{eq:sas-rec}
 \end{align}
 
-Clipping ensures $|P(z)_i|<1$ (unconditional stability). Readout: $\hat{x}_{t+h} = s_t^\top \W$.
+Clipping ensures $|P(z)_i|<1$ (unconditional stability).
+Readout: $\hat{x}_{t+h} = s_t^\top \W$, $W_h$ fitted by ridge regression with 5-fold CV.
+
+\textit{Transition polynomial $P$.}  Let $\rho$ be the spectral-norm bound and
+$\delta = \max(0.005,\,(1{-}\rho)\cdot 0.3)$ a small headroom margin.
+\begin{itemize}\itemsep1pt
+  \item $P_0[i] \overset{\text{iid}}{\sim} \mathcal{U}(-\rho,\,\rho)$ — base
+        eigenvalues spread uniformly to encode timescales from fast-decaying to
+        near-unit-root.
+  \item $P_k[i] \overset{\text{iid}}{\sim} \mathcal{N}\!\bigl(0,\,\delta/5^k\bigr)$
+        for $k \geq 1$ — exponentially shrinking input-modulation terms so that
+        the clip boundary is rarely reached for $|z| \leq 5$.
+\end{itemize}
+
+\textit{Input-drive polynomial $Q$.}  The injection $Q(z_t)$ adds noise with
+variance $\propto \sum_k Q_k[i]^2\,\mathbb{E}[z^{2k}]$.  For $z \sim \mathcal{N}(0,1)$,
+$\mathbb{E}[z^{2k}] = (2k-1)!! = 1\cdot 3\cdot 5\cdots(2k{-}1)$ (double
+factorial).  To keep injection variance roughly uniform across degrees:
+\begin{equation}
+  Q_k[i] \overset{\text{iid}}{\sim}
+  \mathcal{N}\!\!\left(0,\;\frac{1}{\sqrt{n\,(2k-1)!!}}\right)
+\end{equation}
+so $k{=}0,1$ use scale $1/\!\sqrt{n}$ (unchanged from a linear SAS), while
+$k{=}2$ is shrunk by $1/\!\sqrt{3}\approx 0.58$ and $k{=}3$ by
+$1/\!\sqrt{15}\approx 0.26$.  This prevents state explosion for large inputs
+without hand-tuning per-degree scales.
 
 \textbf{Associative structure.} $\ell_t = (P(z_t), Q(z_t))$. Composition rule:
 \begin{equation}
@@ -136,49 +161,6 @@ Depth $O(\log T)$ vs.\ $O(T)$ sequential.
   \in \R^{n+4}, \qquad
   \hat{x}_{t+h} = f_t^\top \W
 \end{equation}
-$w_h[1{:}n]=\bm{0}$ recovers HAR $\Rightarrow$ AugSAS $\geq$ HAR by construction.
-
-% ── Multi-Degree SAS ──────────────────────────────────────────────────────────
-\subsection{MdSAS — Multi-Degree State Affine System}
-
-\textbf{Motivation.}  In a single SAS reservoir every state dimension uses the
-same $P$-polynomial degree.  A degree-0 filter ($P = P_0$) is a pure
-exponential smoother — essentially an AR(1) memory.  A degree-1 filter
-($P = P_0 + P_1 z$) multiplies the memory decay by the current observation,
-creating an input-gated, nonlinear interaction.  These two sub-systems may
-require very different ridge penalties: the linear memory is globally stable
-while the gating term creates local heteroscedasticity.  Assigning them a
-single shared $\alpha$ forces a compromise that can under-regularise one group
-or over-regularise the other.
-
-\textbf{Architecture.}  For $D+1$ groups ($d = 0, \ldots, D$), create
-independent sub-reservoirs each of size $n$:
-\begin{equation}
-  s^{(d)}_t = P^{(d)}(z_t) \odot s^{(d)}_{t-1} + Q^{(d)}(z_t),
-  \qquad d = 0, \ldots, D.
-\end{equation}
-The concatenated state $\tilde{s}_t = [s^{(0)}_t; \ldots; s^{(D)}_t]
-\in \R^{n(D+1)}$ is the feature vector.
-
-\textbf{Block-diagonal ridge.}  The readout solves a ridge regression with a
-\emph{block-diagonal} penalty matrix
-$\Lambda = \mathrm{diag}(\alpha_0 \mathbf{I}_n, \ldots, \alpha_D \mathbf{I}_n)$,
-i.e.\ one scalar $\alpha_d$ per group.  Given the precomputed Gram matrix
-$S^\top S$, iterating over the Cartesian product of per-group grids and
-modifying only the diagonal incurs negligible overhead.
-
-\textbf{Ablation variants.}
-\begin{itemize}\itemsep1pt
-  \item \textbf{SAS$_\text{uniform}$}: standard single reservoir, $p{=}1$,
-        single $\alpha$.  Baseline.
-  \item \textbf{MdSAS$_\text{arch}$}: two sub-reservoirs $(p_0{=}0, p_1{=}1)$,
-        \emph{shared} $\alpha$.  Isolates the architectural benefit of mixing
-        degrees from the regularisation benefit.
-  \item \textbf{MdSAS$_\text{d1}$}: same architecture, \emph{per-group} $\alpha$.
-        Adds independent regularisation on top.
-  \item \textbf{MdSAS$_\text{d2}$}: three sub-reservoirs $(p_0{=}0, p_1{=}1,
-        p_2{=}2)$, per-group $\alpha$.  Tests the value of a degree-2 extension.
-\end{itemize}
 
 % ── RNN ───────────────────────────────────────────────────────────────────────
 \subsection{RNN — LSTM / GRU / LRU}
@@ -260,11 +242,12 @@ $L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol 
   & AR lags $p$         & 5 \\
   & Estimation          & QMLE \\
 \midrule
-\multirow{4}{*}{SAS (diagonal)}
-  & Reservoir size $n$       & 100 or 200 \\
-  & Poly degree $(p, q)$     & $(1,1)$ or $(2,2)$ \\
-  & Spectral norm constraint & $\{0.80,\,0.90,\,0.95,\,0.99\}$ \\
-  & Washout                  & 50 steps \\
+\multirow{5}{*}{SAS (diagonal)}
+  & Reservoir size $n$            & 200 \\
+  & Spectral norm $\rho$          & 0.95 \\
+  & $P$-polynomial degree $p$     & 1 \\
+  & $Q$-polynomial degree $q$     & 1 (SAS\textsubscript{q1}) or 2 (SAS\textsubscript{q2}) \\
+  & Washout                       & 50 steps \\
 \midrule
 \multirow{5}{*}{RNN (GRU)}
   & Hidden size     & 32 \\
@@ -290,69 +273,210 @@ $L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol 
 % ─────────────────────────────────────────────────────────────────────────────
 \section{Results}
 
-\subsection{HAR vs.\ SAS ($q{=}1$, $q{=}2$) — 30 Symbols, $h\in\{1,5,10\}$}
+\subsection{All Models — 30 Symbols, $h\in\{1,5,10\}$}
 
 % ── MSE table ────────────────────────────────────────────────────────────────
-\begin{table}[h]
+\begin{table}[ht]
 \centering
 \caption{Out-of-sample MSE — mean $\pm$ std across 30 symbols
          ($W{=}2000$, $R{=}20$, target: $\log\mathrm{RV}_5$, $N_{\text{sym}}{=}30$).
-         Bold: lowest mean per horizon.
-         SAS\textsubscript{q1}: $n{=}200$, $\mathrm{sn}{=}0.95$, $q{=}1$.
-         SAS\textsubscript{q2}: same but $q{=}2$ (quadratic input drive).}
+         Sorted by avg MSE. Bold: lowest mean per horizon.
+         SAS\textsubscript{q1/q2}: diagonal reservoir, $n{=}200$, $\rho{=}0.95$, $p{=}1$.}
 \label{tab:mse_main}
 \setlength{\tabcolsep}{8pt}
 \begin{tabular}{lcccr}
 \toprule
 Model & $h=1$ & $h=5$ & $h=10$ & avg \\
 \midrule
-HAR
-  & $0.400 \pm 0.072$
-  & $0.509 \pm 0.093$
-  & $0.583 \pm 0.105$
-  & $0.497$ \\
-SAS\textsubscript{q1}
-  & $0.416 \pm 0.095$
-  & $0.533 \pm 0.196$
-  & $0.730 \pm 0.861$
-  & $0.560$ \\
 SAS\textsubscript{q2}
-  & $\mathbf{0.396 \pm 0.072}$
-  & $\mathbf{0.507 \pm 0.094}$
-  & $\mathbf{0.586 \pm 0.114}$
-  & $\mathbf{0.496}$ \\
+  & $\mathbf{0.3958 \pm 0.0718}$
+  & $\mathbf{0.5070 \pm 0.0934}$
+  & $0.5837 \pm 0.1145$
+  & $\mathbf{0.4955}$ \\
+HAR
+  & $0.4002 \pm 0.0721$
+  & $0.5090 \pm 0.0928$
+  & $\mathbf{0.5827 \pm 0.1053}$
+  & $0.4973$ \\
+SAS\textsubscript{q1}
+  & $0.3973 \pm 0.0713$
+  & $0.5065 \pm 0.0913$
+  & $0.5914 \pm 0.1058$
+  & $0.4984$ \\
+DLinear
+  & $0.4001 \pm 0.0720$
+  & $0.5116 \pm 0.0927$
+  & $0.5855 \pm 0.1057$
+  & $0.4991$ \\
+NLinear
+  & $0.4032 \pm 0.0741$
+  & $0.5191 \pm 0.0973$
+  & $0.5977 \pm 0.1130$
+  & $0.5067$ \\
+GARCH
+  & $0.4104 \pm 0.0741$
+  & $0.5459 \pm 0.0976$
+  & $0.6466 \pm 0.1182$
+  & $0.5343$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 % ── MCS frequency table ───────────────────────────────────────────────────────
-\begin{table}[h]
+\begin{table}[ht]
 \centering
 \caption{Model Confidence Set (MCS, $\alpha{=}0.10$, $B{=}1000$ bootstrap replications,
          Hansen et al.\ 2011) — frequency of inclusion in the superior set across
-         30 symbols.  A model ``survives'' the MCS if it cannot be shown to be
+         30 symbols, sorted by total.  A model survives if it cannot be shown to be
          significantly worse than the best model on that symbol.}
 \label{tab:mcs_main}
-\setlength{\tabcolsep}{10pt}
-\begin{tabular}{lcccc}
+\setlength{\tabcolsep}{9pt}
+\begin{tabular}{lccccc}
 \toprule
-Model & $h=1$ & $h=5$ & $h=10$ & total \\
+Model & $h=1$ & $h=5$ & $h=10$ & total & avg MSE \\
 \midrule
 HAR
-  & $7/30\ (23\%)$
-  & $13/30\ (43\%)$
-  & $13/30\ (43\%)$
-  & $33/90$ \\
+  & $22/30\ (73\%)$
+  & $29/30\ (97\%)$
+  & $30/30\ (100\%)$
+  & $81/90$
+  & $0.4973$ \\
 SAS\textsubscript{q1}
   & $28/30\ (93\%)$
-  & $30/30\ (100\%)$
-  & $30/30\ (100\%)$
-  & $88/90$ \\
-SAS\textsubscript{q2}
+  & $27/30\ (90\%)$
   & $23/30\ (77\%)$
-  & $24/30\ (80\%)$
-  & $20/30\ (67\%)$
-  & $67/90$ \\
+  & $78/90$
+  & $0.4984$ \\
+DLinear
+  & $21/30\ (70\%)$
+  & $18/30\ (60\%)$
+  & $19/30\ (63\%)$
+  & $58/90$
+  & $0.4991$ \\
+SAS\textsubscript{q2}
+  & $15/30\ (50\%)$
+  & $17/30\ (57\%)$
+  & $9/30\ (30\%)$
+  & $41/90$
+  & $0.4955$ \\
+NLinear
+  & $2/30\ (7\%)$
+  & $0/30\ (0\%)$
+  & $0/30\ (0\%)$
+  & $2/90$
+  & $0.5067$ \\
+GARCH
+  & $1/30\ (3\%)$
+  & $0/30\ (0\%)$
+  & $0/30\ (0\%)$
+  & $1/90$
+  & $0.5343$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ─────────────────────────────────────────────────────────────────────────────
+\subsection{SAS Ablations — MCS Frequency ($\alpha{=}0.10$, $N_\text{stable}$ symbols)}
+
+Model naming: \texttt{q\textit{k}} = $Q$-polynomial degree $k$;
+\texttt{n\textit{N}} = reservoir size $N$;
+\texttt{sn\textit{XX}} = spectral norm $0.\mathit{XX}$;
+\texttt{p\textit{k}} = $P$-polynomial degree $k$ (default $p{=}1$ when omitted).
+
+% ── Q1: q-degree sweep ────────────────────────────────────────────────────────
+\begin{table}[ht]
+\centering
+\caption{Q1 — $Q$-degree sweep ($n{=}200$, $\rho{=}0.95$, $p{=}1$).
+         Stable subset: 29/30 symbols (q3 diverged on .IBEX).
+         Sorted by MCS total.}
+\label{tab:mcs_q1}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{lccccr}
+\toprule
+Model & $h=1$ & $h=5$ & $h=10$ & total & avg MSE \\
+\midrule
+\texttt{q1\_n200\_sn95}
+  & $26/29\ (90\%)$ & $26/29\ (90\%)$ & $29/29\ (100\%)$ & $81/87$ & $0.4986$ \\
+\texttt{q2\_n200\_sn95}
+  & $29/29\ (100\%)$ & $27/29\ (93\%)$ & $25/29\ (86\%)$ & $81/87$ & $0.4959$ \\
+\texttt{q3\_n200\_sn95}
+  & $18/29\ (62\%)$ & $18/29\ (62\%)$ & $18/29\ (62\%)$ & $54/87$ & $0.5054$ \\
+HAR
+  & $4/29\ (14\%)$ & $5/29\ (17\%)$ & $8/29\ (28\%)$ & $17/87$ & $0.4978$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ── Q2: n sweep ───────────────────────────────────────────────────────────────
+\begin{table}[ht]
+\centering
+\caption{Q2 — reservoir size sweep for $q{=}2$ ($\rho{=}0.95$, $p{=}1$).
+         Stable subset: 29/30 symbols (\texttt{q2\_n100} diverged on .IBEX).
+         Sorted by MCS total.}
+\label{tab:mcs_q2}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{lccccr}
+\toprule
+Model & $h=1$ & $h=5$ & $h=10$ & total & avg MSE \\
+\midrule
+\texttt{q2\_n200\_sn95}
+  & $25/29\ (86\%)$ & $29/29\ (100\%)$ & $28/29\ (97\%)$ & $82/87$ & $0.4959$ \\
+\texttt{q2\_n100\_sn95}
+  & $28/29\ (97\%)$ & $24/29\ (83\%)$ & $24/29\ (83\%)$ & $76/87$ & $0.5000$ \\
+\texttt{q2\_n400\_sn95}
+  & $26/29\ (90\%)$ & $27/29\ (93\%)$ & $21/29\ (72\%)$ & $74/87$ & $0.4966$ \\
+\texttt{q1\_n200\_sn95}
+  & $10/29\ (34\%)$ & $10/29\ (34\%)$ & $13/29\ (45\%)$ & $33/87$ & $0.4986$ \\
+HAR
+  & $0/29\ (0\%)$ & $1/29\ (3\%)$ & $1/29\ (3\%)$ & $2/87$ & $0.4978$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ── Q3: sn sweep ──────────────────────────────────────────────────────────────
+\begin{table}[ht]
+\centering
+\caption{Q3 — spectral-norm sweep for $q{=}2$ ($n{=}200$, $p{=}1$).
+         All 30 symbols stable. Sorted by MCS total.}
+\label{tab:mcs_q3}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{lccccr}
+\toprule
+Model & $h=1$ & $h=5$ & $h=10$ & total & avg MSE \\
+\midrule
+\texttt{q2\_n200\_sn90}
+  & $30/30\ (100\%)$ & $30/30\ (100\%)$ & $27/30\ (90\%)$ & $87/90$ & $0.5014$ \\
+\texttt{q2\_n200\_sn95}
+  & $24/30\ (80\%)$ & $24/30\ (80\%)$ & $24/30\ (80\%)$ & $72/90$ & $0.4955$ \\
+\texttt{q2\_n200\_sn85}
+  & $18/30\ (60\%)$ & $9/30\ (30\%)$ & $13/30\ (43\%)$ & $40/90$ & $0.5075$ \\
+\texttt{q1\_n200\_sn95}
+  & $13/30\ (43\%)$ & $19/30\ (63\%)$ & $23/30\ (77\%)$ & $55/90$ & $0.4984$ \\
+HAR
+  & $1/30\ (3\%)$ & $4/30\ (13\%)$ & $14/30\ (47\%)$ & $19/90$ & $0.4973$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ── Q4: p-degree with q=2 ─────────────────────────────────────────────────────
+\begin{table}[ht]
+\centering
+\caption{Q4 — $P$-degree with $q{=}2$ ($n{=}200$, $\rho{=}0.95$).
+         All 30 symbols stable. Sorted by MCS total.}
+\label{tab:mcs_q4}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{lccccr}
+\toprule
+Model & $h=1$ & $h=5$ & $h=10$ & total & avg MSE \\
+\midrule
+\texttt{p2q2\_n200\_sn95}
+  & $28/30\ (93\%)$ & $28/30\ (93\%)$ & $27/30\ (90\%)$ & $83/90$ & $0.4958$ \\
+\texttt{q2\_n200\_sn95}
+  & $25/30\ (83\%)$ & $27/30\ (90\%)$ & $24/30\ (80\%)$ & $76/90$ & $0.4955$ \\
+\texttt{q1\_n200\_sn95}
+  & $19/30\ (63\%)$ & $20/30\ (67\%)$ & $22/30\ (73\%)$ & $61/90$ & $0.4984$ \\
+HAR
+  & $0/30\ (0\%)$ & $1/30\ (3\%)$ & $3/30\ (10\%)$ & $4/90$ & $0.4973$ \\
 \bottomrule
 \end{tabular}
 \end{table}
