@@ -366,255 +366,86 @@ GARCH
 \end{tabular}
 \end{table}
 
-\subsection{SAS Ablations — MCS Frequency ($\alpha{=}0.10$, $N_\text{stable}$ symbols)}
-
-Model naming: \texttt{q\textit{k}} = $Q$-polynomial degree $k$;
-\texttt{n\textit{N}} = reservoir size $N$;
-\texttt{sn\textit{XX}} = spectral norm $0.\mathit{XX}$;
-\texttt{p\textit{k}} = $P$-polynomial degree $k$ (default $p{=}1$ when omitted).
-
-% ── Q1: q-degree sweep ────────────────────────────────────────────────────────
-\begin{table}[ht]
-\centering
-\caption{Q1 — $Q$-degree sweep ($n{=}200$, $\rho{=}0.95$, $p{=}1$).
-         Stable subset: 29/30 symbols (q3 diverged on .IBEX).
-         Sorted by MCS total.}
-\label{tab:mcs_q1}
-\setlength{\tabcolsep}{8pt}
-\begin{tabular}{lccccr}
-\toprule
-Model & $h=1$ & $h=5$ & $h=10$ & total & avg MSE \\
-\midrule
-\texttt{q1\_n200\_sn95}
-  & $26/29\ (90\%)$ & $26/29\ (90\%)$ & $29/29\ (100\%)$ & $81/87$ & $0.4986$ \\
-\texttt{q2\_n200\_sn95}
-  & $29/29\ (100\%)$ & $27/29\ (93\%)$ & $25/29\ (86\%)$ & $81/87$ & $0.4959$ \\
-\texttt{q3\_n200\_sn95}
-  & $18/29\ (62\%)$ & $18/29\ (62\%)$ & $18/29\ (62\%)$ & $54/87$ & $0.5054$ \\
-HAR
-  & $4/29\ (14\%)$ & $5/29\ (17\%)$ & $8/29\ (28\%)$ & $17/87$ & $0.4978$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-% ── Q2: n sweep ───────────────────────────────────────────────────────────────
-\begin{table}[ht]
-\centering
-\caption{Q2 — reservoir size sweep for $q{=}2$ ($\rho{=}0.95$, $p{=}1$).
-         Stable subset: 29/30 symbols (\texttt{q2\_n100} diverged on .IBEX).
-         Sorted by MCS total.}
-\label{tab:mcs_q2}
-\setlength{\tabcolsep}{8pt}
-\begin{tabular}{lccccr}
-\toprule
-Model & $h=1$ & $h=5$ & $h=10$ & total & avg MSE \\
-\midrule
-\texttt{q2\_n200\_sn95}
-  & $25/29\ (86\%)$ & $29/29\ (100\%)$ & $28/29\ (97\%)$ & $82/87$ & $0.4959$ \\
-\texttt{q2\_n100\_sn95}
-  & $28/29\ (97\%)$ & $24/29\ (83\%)$ & $24/29\ (83\%)$ & $76/87$ & $0.5000$ \\
-\texttt{q2\_n400\_sn95}
-  & $26/29\ (90\%)$ & $27/29\ (93\%)$ & $21/29\ (72\%)$ & $74/87$ & $0.4966$ \\
-\texttt{q1\_n200\_sn95}
-  & $10/29\ (34\%)$ & $10/29\ (34\%)$ & $13/29\ (45\%)$ & $33/87$ & $0.4986$ \\
-HAR
-  & $0/29\ (0\%)$ & $1/29\ (3\%)$ & $1/29\ (3\%)$ & $2/87$ & $0.4978$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-% ── Q3: sn sweep ──────────────────────────────────────────────────────────────
-\begin{table}[ht]
-\centering
-\caption{Q3 — spectral-norm sweep for $q{=}2$ ($n{=}200$, $p{=}1$).
-         All 30 symbols stable. Sorted by MCS total.}
-\label{tab:mcs_q3}
-\setlength{\tabcolsep}{8pt}
-\begin{tabular}{lccccr}
-\toprule
-Model & $h=1$ & $h=5$ & $h=10$ & total & avg MSE \\
-\midrule
-\texttt{q2\_n200\_sn90}
-  & $30/30\ (100\%)$ & $30/30\ (100\%)$ & $27/30\ (90\%)$ & $87/90$ & $0.5014$ \\
-\texttt{q2\_n200\_sn95}
-  & $24/30\ (80\%)$ & $24/30\ (80\%)$ & $24/30\ (80\%)$ & $72/90$ & $0.4955$ \\
-\texttt{q2\_n200\_sn85}
-  & $18/30\ (60\%)$ & $9/30\ (30\%)$ & $13/30\ (43\%)$ & $40/90$ & $0.5075$ \\
-\texttt{q1\_n200\_sn95}
-  & $13/30\ (43\%)$ & $19/30\ (63\%)$ & $23/30\ (77\%)$ & $55/90$ & $0.4984$ \\
-HAR
-  & $1/30\ (3\%)$ & $4/30\ (13\%)$ & $14/30\ (47\%)$ & $19/90$ & $0.4973$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-% ── Q4: p-degree with q=2 ─────────────────────────────────────────────────────
-\begin{table}[ht]
-\centering
-\caption{Q4 — $P$-degree with $q{=}2$ ($n{=}200$, $\rho{=}0.95$).
-         All 30 symbols stable. Sorted by MCS total.}
-\label{tab:mcs_q4}
-\setlength{\tabcolsep}{8pt}
-\begin{tabular}{lccccr}
-\toprule
-Model & $h=1$ & $h=5$ & $h=10$ & total & avg MSE \\
-\midrule
-\texttt{p2q2\_n200\_sn95}
-  & $28/30\ (93\%)$ & $28/30\ (93\%)$ & $27/30\ (90\%)$ & $83/90$ & $0.4958$ \\
-\texttt{q2\_n200\_sn95}
-  & $25/30\ (83\%)$ & $27/30\ (90\%)$ & $24/30\ (80\%)$ & $76/90$ & $0.4955$ \\
-\texttt{q1\_n200\_sn95}
-  & $19/30\ (63\%)$ & $20/30\ (67\%)$ & $22/30\ (73\%)$ & $61/90$ & $0.4984$ \\
-HAR
-  & $0/30\ (0\%)$ & $1/30\ (3\%)$ & $3/30\ (10\%)$ & $4/90$ & $0.4973$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\newpage
-
+\newpage 
 \subsection{SAS as Data-Generating Process — Specification Experiment}
 
-\textbf{DGP construction.}
-For each real-data symbol, we fit SAS\textsubscript{q2} on the \emph{full}
-real series (all $T$ observations) to obtain initialised reservoir matrices
-$(P,Q)$, readout $W_1$, terminal state $s_T$, and residual noise scale
-$\hat\sigma = \mathrm{std}(z_{t+1} - s_t^\top W_1)_{t=\tau}^{T-1}$.
-We then generate $N_\text{gen}{=}4{,}000$ synthetic steps in closed-loop
-autoregressive form:
-
 \begin{algorithm}[H]
-\caption{SAS-DGP autoregressive generation}
+\caption{Extended SAS-DGP Specification Experiment}
 \SetKwInOut{Input}{Input}
-\Input{$(P,Q,W_1,s_T,\hat\sigma)$;\; $\nu$ (Student-$t$ df)}
-$s \leftarrow s_T$\;
-\For{$t = 1$ \KwTo $N_\text{gen}$}{
-  $\varepsilon \sim t(\nu)$\;
-  $z_t \leftarrow s^\top W_1 + \hat\sigma\,\varepsilon$\;
-  $s   \leftarrow P(z_t)\odot s + Q(z_t)$\;
+\SetKwInOut{Output}{Output}
+\Input{Set of real-data symbols $\mathcal{Y}$;\; Noise distribution $\mathcal{D}$;\; Number of steps $N_\text{gen}$;\; Set of seeds $\mathcal{M} = \{s_1, s_2, s_3\}$}
+\Output{Synthetic series $Z^{(y,m)}$ for each symbol $y \in \mathcal{Y}$ and seed $m \in \mathcal{M}$}
+\BlankLine
+\For{each symbol $y \in \mathcal{Y}$}{
+  \tcp{Step 1: Fit SASq2 on full real series}
+  Fit $\text{SAS}_{q=2}$ on the full observation sequence $y_{1:T}$\;
+  Extract reservoir matrices $(P, Q)$, readout $W_1$, terminal state $s_T$, and noise scale $\hat\sigma$\;
+  \BlankLine
+  \For{each seed $m \in \mathcal{M}$}{
+    \tcp{Step 2: Autoregressive generation from terminal state}
+    Set random number generator seed to $m$\;
+    $s \leftarrow s_T$\;
+    Initialize empty sequence $Z^{(y,m)}$\;
+    \For{$t = 1$ \KwTo $N_\text{gen}$}{
+      $\varepsilon \sim \mathcal{D}$\;
+      $z_t \leftarrow s^\top W_1 + \hat\sigma\,\varepsilon$\;
+      $s   \leftarrow P(z_t)\odot s + Q(z_t)$\;
+      Append $z_t$ to $Z^{(y,m)}$\;
+    }
+  }
 }
 \end{algorithm}
 
-No output clipping is applied: \texttt{DiagonalPoly} always clips $P(z)$ to
-$(-0.9999,\,0.9999)$ element-wise, making the state recurrence unconditionally
-contractive for any $z$.
-This is essential for oracle correctness — clipping would introduce a Jensen-gap
-between the stored conditional mean $s_t^\top W_1$ and the true
-$\mathbb{E}[\mathrm{clip}(s_t^\top W_1 + \hat\sigma\varepsilon)]$,
-allowing adaptive models to beat the oracle.
-The raw (un-normalised) synthetic series is used for OOS evaluation
-($W{=}2000$, $R{=}20$, $h{=}1$), preserving the same $z$-space as the DGP.
-
-Eight models are evaluated: the \textbf{Noiseless oracle} (DGP's fixed $W_1$,
-exact conditional mean $s_t^\top W_1$), \texttt{SAS\_same\_fix\-ed$\lambda$}
-(same reservoir as DGP, $\lambda$ fixed to DGP value), \texttt{SAS\_same\_cv$\lambda$}
-(same reservoir, rolling CV for $\lambda$), \texttt{SAS\_diff} (different seed,
-same $q{=}2$), \texttt{SAS\_q1} ($q{=}1$ misspecification), and HAR, DLinear, GARCH.
-Each symbol contributes three independent runs (\texttt{DGP\_SEEDS}$=[42,137,256]$).
-
 \begin{table}[ht]
 \centering
-\caption{DGP specification experiment — MSE ($h{=}1$).
+\caption{DGP specification experiment — Heavy-tailed noise.
          DGP: SAS\textsubscript{q2} ($p{=}1$, $n{=}50$, $\rho{=}0.95$),
-         noise $\hat\sigma\cdot t(5)$, no clipping, $N_\text{gen}{=}4{,}000$.
-         Mean $\pm$ std over 56 symbol-seed runs (3 seeds $\times$ 12 symbols,
-         one run skipped as diverged).
-         Noiseless is the exact oracle floor: $\mathrm{MSE}_\text{oracle} = \hat\sigma^2\cdot\nu/(\nu{-}2)$.}
-\label{tab:dgp_mse}
-\setlength{\tabcolsep}{8pt}
-\begin{tabular}{lcr}
+         noise $\mathcal{D} = t(5)$, no clipping, $N_\text{gen}{=}4{,}000$.
+         Evaluated over $N{=}56$ symbol-seed runs.
+         SAS DGP is the exact oracle floor ($\mathrm{MSE}_\text{oracle} = \hat\sigma^2\cdot\nu/(\nu{-}2)$).
+         MCS uses $\alpha{=}0.10$ and $B{=}1000$ bootstraps, with losses row-normalised.}
+\label{tab:dgp_t5}
+\setlength{\tabcolsep}{10pt}
+\begin{tabular}{lccc}
 \toprule
-Model & $h=1$ & avg \\
+Model & MSE ($h=1$) & MCS Survival & MCS \% \\
 \midrule
-\textbf{Noiseless} (oracle)
-  & $\mathbf{0.5084\pm 0.1207}$
-  & $\mathbf{0.5084}$ \\
-\texttt{SAS\_same\_fixed$\lambda$}
-  & $0.5127\pm 0.1228$
-  & $0.5127$ \\
-\texttt{SAS\_same\_cv$\lambda$}
-  & $0.5129\pm 0.1223$
-  & $0.5129$ \\
-\texttt{SAS\_diff}
-  & $0.5173\pm 0.1312$
-  & $0.5173$ \\
-\texttt{SAS\_q1}
-  & $0.5213\pm 0.1285$
-  & $0.5213$ \\
-HAR
-  & $0.5271\pm 0.1436$
-  & $0.5271$ \\
-DLinear
-  & $0.5286\pm 0.1449$
-  & $0.5286$ \\
-GARCH
-  & $0.5327\pm 0.1423$
-  & $0.5327$ \\
+\textbf{SAS DGP} (oracle)        & $\mathbf{0.5084 \pm 0.1207}$ & $30 / 56$ & $54\%$ \\
+\texttt{SAS\_same\_fixed$\lambda$} & $0.5127 \pm 0.1228$          & $\mathbf{49 / 56}$ & $\mathbf{88\%}$ \\
+\texttt{SAS\_same\_cv$\lambda$}    & $0.5129 \pm 0.1223$          & $48 / 56$ & $86\%$ \\
+\texttt{SAS\_diff}                 & $0.5173 \pm 0.1312$          & $28 / 56$ & $50\%$ \\
+\texttt{SAS\_q1}                   & $0.5213 \pm 0.1285$          & $41 / 56$ & $73\%$ \\
+HAR                                & $0.5271 \pm 0.1436$          & $2 / 56$  & $4\%$ \\
+DLinear                            & $0.5286 \pm 0.1449$          & $1 / 56$  & $2\%$ \\
+GARCH                              & $0.5327 \pm 0.1423$          & $0 / 56$  & $0\%$ \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \begin{table}[ht]
 \centering
-\caption{DGP specification experiment — MCS frequency ($h{=}1$).
-         Same setup as Table~\ref{tab:dgp_mse}.
-         $N{=}56$ symbol-seed runs; losses row-normalised by cross-model mean.
-         $\alpha{=}0.10$, $B{=}1000$ bootstrap replications.
-         Despite having the lowest mean MSE, Noiseless has lower MCS survival
-         than adaptive SAS models: the oracle's pure $t(5)$ residuals have
-         higher squared-loss variance (kurtosis $= 6$), making pairwise
-         test statistics noisier — a bias--variance effect at the MCS level.
-         GARCH: 0 survivals, omitted.}
-\label{tab:dgp_mcs}
-\setlength{\tabcolsep}{9pt}
-\begin{tabular}{lcr}
+\caption{DGP specification experiment — Gaussian noise.
+         DGP: SAS\textsubscript{q2} ($p{=}1$, $n{=}50$, $\rho{=}0.95$),
+         noise $\mathcal{D} = \mathcal{N}(0, 1)$, no clipping, $N_\text{gen}{=}4{,}000$.
+         Evaluated over $N{=}69$ symbol-seed runs.
+         SAS DGP is the exact oracle floor ($\mathrm{MSE}_\text{oracle} = \hat\sigma^2$).
+         MCS uses $\alpha{=}0.10$ and $B{=}1000$ bootstraps, with losses row-normalised.}
+\label{tab:dgp_gaussian}
+\setlength{\tabcolsep}{10pt}
+\begin{tabular}{lccc}
 \toprule
-Model & $h=1\ (56)$ & avg MSE \\
+Model & MSE ($h=1$) & MCS Survival & MCS \% \\
 \midrule
-\texttt{SAS\_same\_fixed$\lambda$}
-  & $49/56\ (88\%)$
-  & $0.5127$ \\
-\texttt{SAS\_same\_cv$\lambda$}
-  & $48/56\ (86\%)$
-  & $0.5129$ \\
-\texttt{SAS\_q1}
-  & $41/56\ (73\%)$
-  & $0.5213$ \\
-\textbf{Noiseless} (oracle)
-  & $30/56\ (54\%)$
-  & $0.5084$ \\
-\texttt{SAS\_diff}
-  & $28/56\ (50\%)$
-  & $0.5173$ \\
-HAR
-  & $2/56\ (4\%)$
-  & $0.5271$ \\
-DLinear
-  & $1/56\ (2\%)$
-  & $0.5286$ \\
+\textbf{SAS DGP} (oracle)        & $\mathbf{0.3015 \pm 0.0678}$ & $\mathbf{65 / 69}$ & $\mathbf{94\%}$ \\
+\texttt{SAS\_same\_fixed$\lambda$} & $0.3898 \pm 0.0832$          & $10 / 69$          & $14\%$ \\
+\texttt{SAS\_diff}                 & $0.3906 \pm 0.0833$          & $4 / 69$           & $6\%$ \\
+\texttt{SAS\_same\_cv$\lambda$}    & $0.3913 \pm 0.0820$          & $9 / 69$           & $13\%$ \\
+HAR                                & $0.3917 \pm 0.0842$          & $1 / 69$           & $1\%$ \\
+DLinear                            & $0.3920 \pm 0.0839$          & $0 / 69$           & $0\%$ \\
+GARCH                              & $0.4005 \pm 0.0870$          & $0 / 69$           & $0\%$ \\
+\texttt{SAS\_q1}                   & $0.4810 \pm 0.7447$          & $10 / 69$          & $14\%$ \\
 \bottomrule
 \end{tabular}
 \end{table}
-
-\textbf{Findings.}
-\begin{itemize}
-  \item \emph{Oracle floor confirmed.}  Noiseless achieves the lowest mean MSE
-        ($0.5084$), consistent with the theoretical floor $\hat\sigma^2\cdot 5/3$.
-        All other models sit strictly above it.
-  \item \emph{Fixed $\lambda$ near-optimal.}  \texttt{SAS\_same\_fixed$\lambda$}
-        ($0.5127$) beats \texttt{SAS\_same\_cv$\lambda$} ($0.5129$): the DGP's
-        $\lambda$ transfers well to the synthetic series (median oracle $\lambda$
-        is only $+0.25$ log$_{10}$ away from DGP $\lambda$), so CV adds noise
-        without improving the mean.
-  \item \emph{Reservoir seed matters little.}  \texttt{SAS\_diff} ($0.5173$)
-        is only $0.005$ above \texttt{SAS\_same\_fixed$\lambda$}: any $q{=}2$
-        reservoir of $n{=}50$ units recovers nearly the same MSE floor.
-  \item \emph{MCS bias--variance tradeoff.}  Noiseless has the best mean MSE
-        but only 54\% MCS survival, while adaptive SAS models reach 86--88\%.
-        The oracle's pure $t(5)$ residuals carry kurtosis~6: squared losses are
-        very heavy-tailed, making per-symbol win margins statistically fragile.
-        Adaptive models reduce effective residual kurtosis by partially fitting
-        the signal, yielding more stable pairwise loss differences in the MCS test.
-\end{itemize}
 
 \end{document}
