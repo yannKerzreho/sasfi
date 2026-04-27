@@ -70,6 +70,16 @@ def quick_oos(
 
         z_t = apply_scaler(float(log_values[t]), mu, sigma)
 
+        # Update FIRST so s_last = s_t.  After fit(), s_last = s_{t-1}.
+        # The convention is z_{t+1} = W·s_t + ε, so we must ingest z_t
+        # before predicting z_{t+h}.
+        for name, model in models.items():
+            try:
+                model.update(z_t)
+                steps_since_refit[name] += 1
+            except Exception as e:
+                print(f"  [upd {name}] {e}")
+
         for name, model in models.items():
             for h in horizons:
                 if t + h >= T:
@@ -80,13 +90,6 @@ def quick_oos(
                     losses[name][h].append((y_hat - z_tgt) ** 2)
                 except Exception as e:
                     print(f"  [pred {name} h={h}] {e}")
-
-        for name, model in models.items():
-            try:
-                model.update(z_t)
-                steps_since_refit[name] += 1
-            except Exception as e:
-                print(f"  [upd {name}] {e}")
 
     return losses
 
@@ -245,7 +248,7 @@ def _run_mcs_one_symbol(
 
     Returns {horizon: [models_in_mcs]}.
     """
-    from utils.mcs import model_confidence_set
+    from utils.mcs_utils import ModelConfidenceSet
 
     result: dict[int, list[str]] = {}
     for h in horizons:
@@ -268,10 +271,20 @@ def _run_mcs_one_symbol(
         row_mean = pivot.mean(axis=1).clip(lower=1e-12)
         pivot_n  = pivot.div(row_mean, axis=0)
 
-        mcs_set, _ = model_confidence_set(
-            pivot_n, alpha=alpha, n_boot=n_boot, seed=seed,
-        )
-        result[h] = mcs_set
+        T = pivot_n.shape[0]
+        w = max(1, int(T ** (1 / 3)))
+        # Pass ndarray + explicit names array so mcs_utils avoids Arrow-backed
+        # pandas indexing (which chokes on the 2-D index returned by iterate()).
+        mcs = ModelConfidenceSet(
+            data      = pivot_n.values,
+            alpha     = alpha,
+            B         = n_boot,
+            w         = w,
+            algorithm = "R",
+            seed      = seed,
+            names     = np.array(list(pivot_n.columns)),
+        ).run()
+        result[h] = mcs.included
     return result
 
 

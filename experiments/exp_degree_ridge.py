@@ -82,9 +82,11 @@ DIVERGE_THRESH = 1.5
 
 
 # ── alpha grid for grouped CV — wider than _ALPHAS_GROUPED, not too coarse ──
-# 7 values, log₁₀ spacing 1.5 → covers [1e-4, 1e5] — same as current default.
-# Extended upper end to 1e5 after noting boundary hits at h=10 in some configs.
-_ALPHAS_EXP = [10 ** x for x in np.arange(-4, 5.5, 1.5)]   # 7 values
+# 9 values, log₁₀ spacing 1.5 → covers [1e-4, 1e8].
+# Smoke test showed systematic upper-bound hits at 1e5 for higher-q groups
+# in mixed models (CV wants very heavy regularisation for those groups).
+# Extending to 1e8 lets CV properly dial those groups down toward zero.
+_ALPHAS_EXP = [10 ** x for x in np.arange(-4, 8.5, 1.5)]   # 9 values: 1e-4…1e8
 
 
 # ── alpha boundary check ──────────────────────────────────────────────────────
