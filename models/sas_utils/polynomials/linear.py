@@ -15,18 +15,11 @@ import jax
 import jax.numpy as jnp
 from .base import BasePoly
 
-
 @jax.tree_util.register_pytree_node_class
 class LinearPoly(BasePoly):
     """
-    Full-matrix polynomial basis (d+1 terms, each n×n).
-
-    Parameters
-    ----------
-    p_degree     : polynomial degree for P (currently only degree=1 used,
-                   i.e. constant + linear; higher degrees use more P slices).
-    q_degree     : polynomial degree for Q.
-    spectral_norm: upper bound on sum of spectral norms across P terms.
+    Full-matrix polynomial basis with exact powers of z.
+    P(z) = P[0] + P[1]·z + P[2]·z² + ...
     """
 
     def __init__(self, p_degree: int = 1, q_degree: int = 1,
@@ -48,59 +41,177 @@ class LinearPoly(BasePoly):
     # ── factory ────────────────────────────────────────────────────────────
 
     def initialize(self, n: int, key) -> "LinearPoly":
-        """
-        Random initialisation for a univariate input (d=1).
-
-        P[k] ~ N(0, 1/n) scaled so sum(spectral_norms) = spectral_norm.
-        Q[k] ~ N(0, 1/n).
-        """
-        d = 1   # univariate: z is a scalar embedded as (1,)
         ka, kb = jax.random.split(key)
-        P_raw = jax.random.normal(ka, (d + 1, n, n)) / n ** 0.5
-        P     = self._scale_p(P_raw, self.spectral_norm)
-        Q     = jax.random.normal(kb, (d + 1, n)) / n ** 0.5
-        obj   = LinearPoly(self.p_degree, self.q_degree, self.spectral_norm)
+        
+        # P: (p_degree + 1, n, n)
+        P_raw = jax.random.normal(ka, (self.p_degree + 1, n, n)) / n ** 0.5
+        
+        # ENFORCE NILPOTENCY (Strictly upper triangular)
+        P_nilpotent = jnp.triu(P_raw, k=1)
+        P = self._scale_p(P_nilpotent, self.spectral_norm)
+        
+        # Q: (q_degree + 1, n)
+        Q = jax.random.normal(kb, (self.q_degree + 1, n)) / n ** 0.5
+        
+        obj = LinearPoly(self.p_degree, self.q_degree, self.spectral_norm)
         obj.P, obj.Q = P, Q
         return obj
+
+    # ── feature helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _feats(z, degree: int):
+        """z: (1,) → [1, z, z², ..., z^degree]"""
+        # Calcule les puissances de 0 à degree
+        return jnp.power(z[0], jnp.arange(degree + 1))
+
+    @staticmethod
+    def _batch_feats(z_batch, degree: int):
+        """z_batch: (B, 1) → (B, degree + 1)"""
+        return jnp.power(z_batch[:, 0:1], jnp.arange(degree + 1))
 
     # ── forward evaluators ─────────────────────────────────────────────────
 
     def eval_p(self, z):
-        """z: (d,) → A: (n, n)   linear combination of P slices."""
-        feats = jnp.concatenate([jnp.ones(1), z])          # (d+1,)
-        return jnp.einsum("f,fij->ij", feats, self.P)      # (n, n)
+        feats = self._feats(z, self.p_degree)
+        return jnp.einsum("f,fij->ij", feats, self.P)
 
     def eval_q(self, z):
-        """z: (d,) → b: (n,)."""
-        feats = jnp.concatenate([jnp.ones(1), z])
-        return jnp.einsum("f,fi->i", feats, self.Q)        # (n,)
+        feats = self._feats(z, self.q_degree)
+        return jnp.einsum("f,fi->i", feats, self.Q)
 
     def batch_eval_p(self, z_batch):
-        """z_batch: (B, d) → (B, n, n) — batched efficient einsum."""
-        # P[0] broadcast + z-weighted sum of P[1:]
-        return self.P[0] + jnp.einsum("bd,dij->bij", z_batch, self.P[1:])
+        feats = self._batch_feats(z_batch, self.p_degree)
+        return jnp.einsum("bf,fij->bij", feats, self.P)
 
     def batch_eval_q(self, z_batch):
-        """z_batch: (B, d) → (B, n)."""
-        return self.Q[0] + jnp.einsum("bd,di->bi", z_batch, self.Q[1:])
+        feats = self._batch_feats(z_batch, self.q_degree)
+        return jnp.einsum("bf,fi->bi", feats, self.Q)
 
     # ── algebraic primitives ────────────────────────────────────────────────
 
     def apply(self, A, s):
-        """(n,n) A, (n,) s → (n,)  via matrix-vector product."""
         return A @ s
 
     def combine(self, i, j):
-        """
-        Monoid for the associative scan.
-        i = (A_i: (n,n), b_i: (n,))
-        j = (A_j: (n,n), b_j: (n,))
-        → (A_j @ A_i, A_j @ b_i + b_j)
-
-        Note: jax.lax.associative_scan internally vmaps combine, so A_i/A_j
-        may arrive as (batch, n, n) and b_i/b_j as (batch, n).  The
-        `b_i[..., None]` trick makes the matvec unambiguous for any batch dim.
-        """
         A_i, b_i = i
         A_j, b_j = j
         return A_j @ A_i, (A_j @ b_i[..., None])[..., 0] + b_j
+    
+
+@jax.tree_util.register_pytree_node_class
+class BlockLinearPoly(BasePoly):
+    """
+    Block-Diagonal Polynomial basis.
+    Transitions are dense within blocks of size (B x B), but isolated between blocks.
+    Guarantees O(K * B^3) scan complexity instead of O(n^3).
+    """
+
+    def __init__(self, n_blocks: int, block_size: int, 
+                 p_degree: int = 1, q_degree: int = 1,
+                 spectral_norm: float = 0.9):
+        super().__init__(p_degree, q_degree)
+        self.n_blocks = n_blocks
+        self.block_size = block_size
+        self.spectral_norm = spectral_norm
+
+    @property
+    def n(self):
+        return self.n_blocks * self.block_size
+
+    # ── pytree protocol ────────────────────────────────────────────────────
+
+    def tree_flatten(self):
+        return (self.P, self.Q), (self.n_blocks, self.block_size, self.p_degree, self.q_degree, self.spectral_norm)
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        obj = cls(*aux)
+        obj.P, obj.Q = children
+        return obj
+
+    # ── factory ────────────────────────────────────────────────────────────
+
+    def initialize(self, n: int, key) -> "BlockLinearPoly":
+        if n != self.n:
+            raise ValueError(f"Requested n={n} but BlockPoly is configured for {self.n_blocks}x{self.block_size}={self.n}")
+
+        K, B = self.n_blocks, self.block_size
+        ka, kb = jax.random.split(key)
+        
+        # P_raw: (p_deg+1, K, B, B)
+        P_raw = jax.random.normal(ka, (self.p_degree + 1, K, B, B)) / B ** 0.5
+        
+        # 1. ENFORCE NILPOTENCY PER BLOCK
+        P_nilpotent = jnp.triu(P_raw, k=1)
+        
+        # 2. SCALE PER BLOCK (Sum of spectral norms over p_degrees for each block <= sn)
+        # Swap axes to iterate over blocks: (K, p_deg+1, B, B)
+        P_k = jnp.swapaxes(P_nilpotent, 0, 1)
+        
+        def scale_block_seq(seq):
+            norms = jax.vmap(lambda M: jnp.linalg.norm(M, ord=2))(seq)
+            return seq * (self.spectral_norm / jnp.maximum(jnp.sum(norms), 1e-8))
+            
+        P_scaled = jax.vmap(scale_block_seq)(P_k) 
+        self.P = jnp.swapaxes(P_scaled, 0, 1)  # Back to (p_deg+1, K, B, B)
+        
+        # Q: (q_deg+1, n)
+        self.Q = jax.random.normal(kb, (self.q_degree + 1, n)) / B ** 0.5
+        return self
+
+    # ── feature helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _feats(z, degree: int):
+        return jnp.power(z[0], jnp.arange(degree + 1))
+
+    @staticmethod
+    def _batch_feats(z_batch, degree: int):
+        return jnp.power(z_batch[:, 0:1], jnp.arange(degree + 1))
+
+    # ── forward evaluators ─────────────────────────────────────────────────
+
+    def eval_p(self, z):
+        feats = self._feats(z, self.p_degree)
+        return jnp.einsum("f,fkij->kij", feats, self.P) # Returns (K, B, B)
+
+    def eval_q(self, z):
+        feats = self._feats(z, self.q_degree)
+        return jnp.einsum("f,fi->i", feats, self.Q)
+
+    def batch_eval_p(self, z_batch):
+        feats = self._batch_feats(z_batch, self.p_degree)
+        return jnp.einsum("bf,fkij->bkij", feats, self.P) # Returns (Batch, K, B, B)
+
+    def batch_eval_q(self, z_batch):
+        feats = self._batch_feats(z_batch, self.q_degree)
+        return jnp.einsum("bf,fi->bi", feats, self.Q)
+
+    # ── algebraic primitives (The Magic Happens Here) ───────────────────────
+
+    def apply(self, A, s):
+        """A: (K, B, B), s: (n,)"""
+        s_blocked = s.reshape(self.n_blocks, self.block_size, 1)
+        return jnp.matmul(A, s_blocked).reshape(self.n)
+
+    def combine(self, i, j):
+        """
+        Matrix multiplication of block-diagonal matrices.
+        JAX 'matmul' automatically broadcasts over batch and block dimensions!
+        """
+        A_i, b_i = i  # A_i: (..., K, B, B), b_i: (..., n)
+        A_j, b_j = j
+        
+        K, B = self.n_blocks, self.block_size
+        
+        # 1. Multiply the blocks together
+        A_new = jnp.matmul(A_j, A_i)
+        
+        # 2. Reshape b_i to treat it as a vector per block: (..., K, B, 1)
+        b_i_reshaped = b_i.reshape(b_i.shape[:-1] + (K, B, 1))
+        
+        # 3. Apply A_j to b_i block-wise, then reshape back to (..., n)
+        b_term = jnp.matmul(A_j, b_i_reshaped).reshape(b_j.shape)
+        
+        return A_new, b_term + b_j

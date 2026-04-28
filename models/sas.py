@@ -297,6 +297,9 @@ class SASForecaster(BaseForecaster):
         n_cv_folds:    int   = 3,
         seed:          int   = 42,
         alphas               = None,
+        apply_log:     bool  = False,
+        input_scale:   float = 4.0,
+        clip:          bool  = True,
     ):
         self.n_reservoir = n_reservoir
         self.washout     = washout
@@ -304,6 +307,9 @@ class SASForecaster(BaseForecaster):
         self.n_cv_folds  = n_cv_folds
         self.seed        = seed
         self.alphas      = list(alphas) if alphas is not None else _ALPHAS
+        self.apply_log   = apply_log
+        self.input_scale = input_scale
+        self.clip        = clip 
 
         # ── resolve basis spec - uninitialized BasePoly ───────────────────
         if isinstance(basis, str):
@@ -328,19 +334,49 @@ class SASForecaster(BaseForecaster):
         self._W: dict[int, np.ndarray] = {}
         self._s_last: np.ndarray | None = None
 
+    # ── preprocessing helpers ─────────────────────────────────────────────
+
+    def _to_log(self, arr: np.ndarray) -> np.ndarray:
+        """Apply log transform when apply_log=True; otherwise identity."""
+        if self.apply_log:
+            return np.log(np.maximum(arr, 1e-10))
+        return arr
+
+    def _to_log_scalar(self, x: float) -> float:
+        if self.apply_log:
+            return float(np.log(max(x, 1e-10)))
+        return x
+
+    def _to_reservoir_input(self, arr_z: np.ndarray) -> np.ndarray:
+        """z-scored array → scaled, clipped reservoir input."""
+        return np.clip(arr_z / self.input_scale, -1.0, 1.0) if self.clip else arr_z / self.input_scale
+
+    def _pred_to_output(self, y_z: float) -> float:
+        """Inverse-transform readout from z-space back to input scale."""
+        y_log = float(self._unzscore(y_z, self._mu, self._sigma))
+        if self.apply_log:
+            return float(np.exp(y_log))
+        return y_log
+
     # ── BaseForecaster interface ───────────────────────────────────────────
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "SASForecaster":
         """
         Fit the readout for each horizon.
 
-        1. (Re-)initialise the basis with a fresh JAX random key.
-        2. Run the two-level parallel scan → (T, n) state matrix.
-        3. For each h ∈ horizons: rolling ridge CV then solve for W_h.
+        1. Optional log transform; z-score → reservoir input (scaled+clipped).
+        2. (Re-)initialise the basis with a fresh JAX random key.
+        3. Run the two-level parallel scan → (T, n) state matrix.
+        4. For each h: ridge CV on (states, z-scored targets).
         """
-        history = np.asarray(history, dtype=np.float32)
-        T       = len(history)
-        u       = jnp.array(history[:, None])   # (T, 1) — univariate
+        history      = np.asarray(history, dtype=np.float64)
+        history_log  = self._to_log(history)
+        self._mu, self._sigma = self._fit_scaler(history_log)
+        history_z    = self._zscore(history_log, self._mu, self._sigma)
+        history_u    = self._to_reservoir_input(history_z).astype(np.float32)
+
+        T = len(history_u)
+        u = jnp.array(history_u[:, None])   # (T, 1) — univariate
 
         # Always re-init: ensures each OOS refit gets a fresh random reservoir
         key         = jax.random.PRNGKey(self.seed)
@@ -356,9 +392,10 @@ class SASForecaster(BaseForecaster):
         n            = self.n_reservoir
         self._W      = {}
         self.alpha_log_: dict[int, float] = {}
+        Y_z          = history_z.astype(np.float32)
         for h in horizons:
             S = states_np[self.washout: T - h]
-            Y = history  [self.washout + h: T]
+            Y = Y_z      [self.washout + h: T]
             if len(S) < 5:
                 self._W[h] = np.zeros(n, dtype=np.float32)
                 continue
@@ -370,14 +407,18 @@ class SASForecaster(BaseForecaster):
 
     def update(self, x: float) -> "SASForecaster":
         """Advance the reservoir state by one step (streaming, JIT'd)."""
-        z            = jnp.array([float(x)])           # (1,)
+        x_log        = self._to_log_scalar(float(x))
+        x_z          = float(self._zscore(x_log, self._mu, self._sigma))
+        x_u          = float(np.clip(x_z / self.input_scale, -1.0, 1.0)) if self.clip else float(x_z / self.input_scale)
+        z            = jnp.array([x_u], dtype=jnp.float32)
         s_new        = _step_once(self._basis, jnp.array(self._s_last), z)
         self._s_last = np.array(s_new, dtype=np.float32)
         return self
 
     def predict(self, h: int) -> float:
-        """Linear readout: ŷ_{t+h} = s_last · W_h."""
-        return float(self._s_last @ self._W[h])
+        """Linear readout in z-space, inverse-transformed to input scale."""
+        y_z = float(self._s_last @ self._W[h])
+        return self._pred_to_output(y_z)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -397,11 +438,14 @@ class SASEnsemble(BaseForecaster):
     **kwargs : forwarded to each SASForecaster; `seed` is offset by member k.
     """
 
-    def __init__(self, K: int = 5, **kwargs):
+    def __init__(self, K: int = 5, apply_log: bool = False,
+                 input_scale: float = 4.0, **kwargs):
         self.K       = K
         base_seed    = kwargs.pop("seed", 42)
         self.members = [
-            SASForecaster(seed=base_seed + k, **kwargs) for k in range(K)
+            SASForecaster(seed=base_seed + k, apply_log=apply_log,
+                          input_scale=input_scale, **kwargs)
+            for k in range(K)
         ]
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "SASEnsemble":
@@ -453,12 +497,14 @@ class AugSASForecaster(BaseForecaster):
         alphas               = None,
         lags_w:        int   = 5,
         lags_m:        int   = 22,
+        apply_log:     bool  = False,
+        input_scale:   float = 4.0,
     ):
         self._sas = SASForecaster(
             n_reservoir=n_reservoir, basis=basis,
             spectral_norm=spectral_norm, p_degree=p_degree, q_degree=q_degree,
             washout=washout, chunk_size=chunk_size, n_cv_folds=n_cv_folds,
-            seed=seed, alphas=alphas,
+            seed=seed, alphas=alphas, apply_log=apply_log, input_scale=input_scale,
         )
         self.lags_w     = lags_w
         self.lags_m     = lags_m
@@ -475,12 +521,18 @@ class AugSASForecaster(BaseForecaster):
         return np.array([1.0, rv_d, rv_w, rv_m], dtype=np.float32)
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "AugSASForecaster":
-        history = np.asarray(history, dtype=np.float32)
-        T       = len(history)
-        n       = self._sas.n_reservoir
+        history     = np.asarray(history, dtype=np.float64)
+        T           = len(history)
+        n           = self._sas.n_reservoir
+
+        # ── preprocessing (shared with SASForecaster) ──────────────────────
+        history_log = self._sas._to_log(history)
+        self._sas._mu, self._sas._sigma = self._sas._fit_scaler(history_log)
+        history_z   = self._sas._zscore(history_log, self._sas._mu, self._sas._sigma)
+        history_u   = self._sas._to_reservoir_input(history_z).astype(np.float32)
 
         # ── run reservoir (re-init + parallel scan) ────────────────────────
-        u              = jnp.array(history[:, None])
+        u              = jnp.array(history_u[:, None])
         key            = jax.random.PRNGKey(self._sas.seed)
         self._sas._basis = self._sas._basis.initialize(n, key)
 
@@ -491,11 +543,12 @@ class AugSASForecaster(BaseForecaster):
         states_np         = np.array(states, dtype=np.float32)   # (T, n)
         self._sas._s_last = np.array(s_last, dtype=np.float32)
 
-        # ── HAR feature matrix ─────────────────────────────────────────────
+        # ── HAR feature matrix (in z-space) ───────────────────────────────
+        history_z_f32 = history_z.astype(np.float32)
         har_buf   = deque(maxlen=self.lags_m)
         har_feats = []
         for t in range(T):
-            har_buf.append(float(history[t]))
+            har_buf.append(float(history_z_f32[t]))
             arr  = np.array(har_buf)
             rv_d = arr[-1]
             rv_w = arr[-min(self.lags_w, len(arr)):].mean()
@@ -505,14 +558,15 @@ class AugSASForecaster(BaseForecaster):
 
         aug   = np.concatenate([states_np, har_feats], axis=1) # (T, n+4)
         n_aug = aug.shape[1]
-        self._buf = deque(history[-self.lags_m:].tolist(), maxlen=self.lags_m)
+        self._buf = deque(history_z_f32[-self.lags_m:].tolist(), maxlen=self.lags_m)
 
-        # ── ridge per horizon ──────────────────────────────────────────────
+        # ── ridge per horizon (targets in z-space) ─────────────────────────
         wo    = self._sas.washout
+        Y_z   = history_z_f32
         self._W = {}
         for h in horizons:
-            S = aug    [wo: T - h]
-            Y = history[wo + h: T]
+            S = aug[wo: T - h]
+            Y = Y_z[wo + h: T]
             if len(S) < 5:
                 self._W[h] = np.zeros(n_aug, dtype=np.float32)
                 continue
@@ -523,14 +577,17 @@ class AugSASForecaster(BaseForecaster):
 
     def update(self, x: float) -> "AugSASForecaster":
         self._sas.update(x)
-        self._buf.append(float(x))
+        x_log = self._sas._to_log_scalar(float(x))
+        x_z   = float(self._sas._zscore(x_log, self._sas._mu, self._sas._sigma))
+        self._buf.append(x_z)
         return self
 
     def predict(self, h: int) -> float:
         s   = self._sas._s_last.astype(np.float32)
         har = self._har_feat()
         f   = np.concatenate([s, har])
-        return float(f @ self._W[h])
+        y_z = float(f @ self._W[h])
+        return self._sas._pred_to_output(y_z)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -609,6 +666,8 @@ class MultiDegreeSASForecaster(BaseForecaster):
         grouped_ridge: bool        = True,
         p_degrees:     list | None = None,
         q_degrees:     list | None = None,
+        apply_log:     bool        = False,
+        input_scale:   float       = 4.0,
     ):
         self.n_per_group   = n_per_group
         self.max_degree    = max_degree
@@ -620,6 +679,8 @@ class MultiDegreeSASForecaster(BaseForecaster):
         self.seed          = seed
         self.alphas_1d     = list(alphas_1d) if alphas_1d is not None else _ALPHAS_GROUPED
         self.grouped_ridge = grouped_ridge
+        self.apply_log     = apply_log
+        self.input_scale   = input_scale
 
         # Resolve per-group p/q degree lists
         _p_list = list(p_degrees) if p_degrees is not None else list(range(max_degree + 1))
@@ -663,10 +724,19 @@ class MultiDegreeSASForecaster(BaseForecaster):
         Concatenate sub-states → block-featured design matrix.
         Fit per-group ridge via grouped CV per horizon.
         """
-        history = np.asarray(history, dtype=np.float32)
+        history = np.asarray(history, dtype=np.float64)
         T       = len(history)
-        u       = jnp.array(history[:, None])   # (T, 1)
 
+        # ── preprocessing ─────────────────────────────────────────────────
+        if self.apply_log:
+            history_log = np.log(np.maximum(history, 1e-10))
+        else:
+            history_log = history
+        self._mu, self._sigma = self._fit_scaler(history_log)
+        history_z = self._zscore(history_log, self._mu, self._sigma)
+        history_u = np.clip(history_z / self.input_scale, -1.0, 1.0).astype(np.float32) if self.clip else (history_z / self.input_scale).astype(np.float32)
+
+        u        = jnp.array(history_u[:, None])   # (T, 1)
         base_key = jax.random.PRNGKey(self.seed)
         states_list: list[np.ndarray] = []
         self._s_lasts = []
@@ -680,19 +750,20 @@ class MultiDegreeSASForecaster(BaseForecaster):
             states_d, s_last_d = _collect_states(
                 init_basis, u, s0, self.n_per_group, self.chunk_size
             )
-            states_list.append(np.array(states_d,  dtype=np.float32))   # (T, n_pg)
-            self._s_lasts.append(np.array(s_last_d, dtype=np.float32))  # (n_pg,)
+            states_list.append(np.array(states_d,  dtype=np.float32))
+            self._s_lasts.append(np.array(s_last_d, dtype=np.float32))
 
         all_states = np.concatenate(states_list, axis=1)   # (T, n_total)
         gsizes     = self.group_sizes
         wo         = self.washout
+        Y_z        = history_z.astype(np.float32)
 
         self._W         = {}
-        self.alpha_log_: dict[int, object] = {}   # float (single) or tuple (grouped)
+        self.alpha_log_: dict[int, object] = {}
 
         for h in horizons:
             S = all_states[wo: T - h]
-            Y = history   [wo + h: T]
+            Y = Y_z       [wo + h: T]
             if len(S) < 5:
                 self._W[h] = np.zeros(self.n_reservoir, dtype=np.float32)
                 continue
@@ -701,9 +772,6 @@ class MultiDegreeSASForecaster(BaseForecaster):
                 self._W[h]       = _ridge_fit_grouped(S, Y, gsizes, best_alphas).astype(np.float32)
                 self.alpha_log_[h] = best_alphas
             else:
-                # Single shared alpha.  For a *fair* architecture-only comparison
-                # with the grouped variant, use the same 1-D grid; pass
-                # alphas_1d=_ALPHAS to the constructor when you want the full grid.
                 alpha            = _ridge_cv(S, Y, self.n_cv_folds, self.alphas_1d)
                 self._W[h]       = _ridge_fit(S, Y, alpha).astype(np.float32)
                 self.alpha_log_[h] = alpha
@@ -712,13 +780,23 @@ class MultiDegreeSASForecaster(BaseForecaster):
 
     def update(self, x: float) -> "MultiDegreeSASForecaster":
         """Advance all sub-reservoir states by one step."""
-        z = jnp.array([float(x)])
+        if self.apply_log:
+            x_log = float(np.log(max(float(x), 1e-10)))
+        else:
+            x_log = float(x)
+        x_z = float(self._zscore(x_log, self._mu, self._sigma))
+        x_u = float(np.clip(x_z / self.input_scale, -1.0, 1.0)) if self.clip else float(x_z / self.input_scale)
+        z   = jnp.array([x_u], dtype=jnp.float32)
         for d, basis in enumerate(self._bases):
             s_new          = _step_once(basis, jnp.array(self._s_lasts[d]), z)
             self._s_lasts[d] = np.array(s_new, dtype=np.float32)
         return self
 
     def predict(self, h: int) -> float:
-        """Linear readout over concatenated sub-states."""
-        s = np.concatenate(self._s_lasts)
-        return float(s @ self._W[h])
+        """Linear readout over concatenated sub-states, inverse-transformed."""
+        s   = np.concatenate(self._s_lasts)
+        y_z = float(s @ self._W[h])
+        y_log = float(self._unzscore(y_z, self._mu, self._sigma))
+        if self.apply_log:
+            return float(np.exp(y_log))
+        return y_log

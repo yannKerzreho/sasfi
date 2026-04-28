@@ -97,12 +97,14 @@ class GARCHForecaster(BaseForecaster):
     # ── fit ───────────────────────────────────────────────────────────────
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "GARCHForecaster":
-        history = np.asarray(history, dtype=np.float64)
+        history          = np.asarray(history, dtype=np.float64)
+        self._mu, self._sigma = self._fit_scaler(history)
+        history_z        = self._zscore(history, self._mu, self._sigma)
         self._buf.clear()
-        self._buf.extend(history.tolist())
+        self._buf.extend(history_z.tolist())
 
         try:
-            am  = _arch_model(history, mean="AR", lags=self.p_ar,
+            am  = _arch_model(history_z, mean="AR", lags=self.p_ar,
                               vol="GARCH", p=self.p, q=self.q,
                               dist="normal", rescale=False)
             res = am.fit(disp="off", show_warning=False)
@@ -122,9 +124,8 @@ class GARCHForecaster(BaseForecaster):
             self.eps_last    = float(resid.iloc[-1])
 
         except Exception:
-            # Robust OLS fallback: AR(p_ar) estimated by least squares
-            self.const, self.phi = _ols_ar(history, self.p_ar)
-            self.sigma2_last     = float(np.var(history))
+            self.const, self.phi = _ols_ar(history_z, self.p_ar)
+            self.sigma2_last     = float(np.var(history_z))
             self.eps_last        = 0.0
 
         return self
@@ -132,13 +133,13 @@ class GARCHForecaster(BaseForecaster):
     # ── streaming update ─────────────────────────────────────────────────
 
     def update(self, x: float) -> "GARCHForecaster":
-        self._buf.append(float(x))
-        # Recompute last residual and update GARCH variance
+        z_x = float(self._zscore(float(x), self._mu, self._sigma))
+        self._buf.append(z_x)
         buf = list(self._buf)
         if len(buf) > self.p_ar:
             state    = np.array(buf[-self.p_ar - 1:-1][::-1])
             mean_t   = self.const + float(self.phi @ state)
-            eps      = float(x) - mean_t
+            eps      = z_x - mean_t
         else:
             eps = 0.0
         self.sigma2_last = (self.omega
@@ -150,4 +151,5 @@ class GARCHForecaster(BaseForecaster):
     # ── prediction ───────────────────────────────────────────────────────
 
     def predict(self, h: int) -> float:
-        return self._predict_mean(h)
+        y_z = self._predict_mean(h)
+        return float(self._unzscore(y_z, self._mu, self._sigma))

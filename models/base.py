@@ -9,14 +9,14 @@ class BaseForecaster(ABC):
 
     Contract
     --------
-    fit(history, horizons)  : calibrate on 1-D numpy array (T,).
+    fit(history, horizons)  : calibrate on 1-D numpy array (T,) of raw/log values.
     update(x)               : ingest one new scalar; update state without refit.
-    predict(h)              : scalar point forecast h steps ahead.
+    predict(h)              : scalar point forecast h steps ahead, in the same
+                              scale as the input (raw RV or log RV).
 
-    The evaluation loop only ever calls these three methods, so the model
-    can internally use any memory structure (deque, scan state, matrix).
-    This means the loop is decoupled from how a model stores the past —
-    whether it is a deque, an associative scan state, or a full history array.
+    All preprocessing (z-scoring, log-transform, scaling, clipping) is done
+    inside each model.  The OOS loop passes raw/log values unchanged and
+    compares predictions directly against raw/log targets.
     """
 
     @abstractmethod
@@ -31,8 +31,27 @@ class BaseForecaster(ABC):
 
     @abstractmethod
     def predict(self, h: int) -> float:
-        """Point forecast h steps ahead (in the same space as the input)."""
+        """Point forecast h steps ahead (in the same scale as the input)."""
         ...
+
+    # ── z-score helpers (shared by all subclasses) ────────────────────────────
+
+    @staticmethod
+    def _fit_scaler(history: np.ndarray) -> tuple[float, float]:
+        """Return (mean, std) from training window; std floored at 1e-8."""
+        mu    = float(np.mean(history))
+        sigma = float(np.std(history))
+        return mu, max(sigma, 1e-8)
+
+    @staticmethod
+    def _zscore(x, mu: float, sigma: float):
+        """Standardise x with pre-fitted (mu, sigma)."""
+        return (np.asarray(x) - mu) / sigma
+
+    @staticmethod
+    def _unzscore(z, mu: float, sigma: float):
+        """Inverse standardisation."""
+        return np.asarray(z) * sigma + mu
 
     def __repr__(self) -> str:
         return self.__class__.__name__

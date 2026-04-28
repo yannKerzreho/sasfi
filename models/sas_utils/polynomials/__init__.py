@@ -1,6 +1,6 @@
 from .base     import BasePoly
-from .linear   import LinearPoly
+from .linear   import LinearPoly, BlockLinearPoly
 from .diagonal import DiagonalPoly
-from .trigo    import TrigoPoly
+from .trigo    import TrigoPoly, BlockTrigoPoly
 
-__all__ = ["BasePoly", "LinearPoly", "DiagonalPoly", "TrigoPoly"]
+__all__ = ["BasePoly", "LinearPoly", "BlockLinearPoly", "DiagonalPoly", "TrigoPoly", "BlockTrigoPoly"]

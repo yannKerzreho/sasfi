@@ -12,9 +12,14 @@ The MCS is run independently on each symbol, then the frequency table
 counts how many symbols each model survived into the best set — a robust
 cross-asset ranking that is not sensitive to the variance of any single TS.
 
+All preprocessing (z-scoring, log-transform, scaling) is done inside each
+model.  The OOS loop passes raw RV (default) or log RV (--log) unchanged
+and compares predictions directly against the same-scale targets.
+
 Usage
 -----
-    python main.py                                          # all symbols
+    python main.py                                          # all symbols, raw RV
+    python main.py --log                                    # work on log RV
     python main.py --symbol .FTSE                          # one symbol
     python main.py --symbol .AEX .SPX .FTSE                # subset
     python main.py --symbol .AEX --target rk_parzen
@@ -61,8 +66,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument("--target", default="rv5",
                    help="RV column: rv5, rk_parzen, bv, rv10, …")
-    p.add_argument("--no-log", action="store_true",
-                   help="Skip log-transform (not recommended)")
+    p.add_argument("--log", action="store_true",
+                   help="Work on log-transformed RV (models receive log RV). "
+                        "Default: raw RV (models apply their own log transform if needed).")
 
     # ── evaluation ───────────────────────────────────────────────────────
     p.add_argument("--horizons",   nargs="+", type=int, default=[1, 5, 10])
@@ -116,7 +122,7 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 # ── model registry ──────────────────────────────────────────────────────────
 
-def build_models(args: argparse.Namespace) -> dict:
+def build_models(args: argparse.Namespace, apply_log: bool = False) -> dict:
     from models.linear import HARForecaster, NLinearForecaster, DLinearForecaster
     models: dict = {}
 
@@ -142,6 +148,7 @@ def build_models(args: argparse.Namespace) -> dict:
             from models.sas import SASForecaster
             # SAS_q1: original best config (n=200, sn=0.95, q=1)
             # SAS_q2: q=2 polynomial input drive — better at h=1
+            # apply_log=True when input is raw RV: SAS logs it internally
             models["SAS_q1"] = SASForecaster(
                 n_reservoir   = args.sas_n * 2,   # 200 by default
                 basis         = "diagonal",
@@ -151,6 +158,20 @@ def build_models(args: argparse.Namespace) -> dict:
                 washout       = args.sas_washout,
                 chunk_size    = args.sas_chunk,
                 seed          = args.seed,
+                apply_log     = apply_log,
+            )
+            models["SAS_q1_noclip"] = SASForecaster(
+                n_reservoir   = args.sas_n * 2,   # 200 by default
+                basis         = "diagonal",
+                spectral_norm = 0.95,
+                p_degree      = args.sas_p_degree,
+                q_degree      = 1,
+                washout       = args.sas_washout,
+                chunk_size    = args.sas_chunk,
+                seed          = args.seed,
+                apply_log     = apply_log,
+                input_scale   = 1,
+                clip          = False,
             )
             models["SAS_q2"] = SASForecaster(
                 n_reservoir   = args.sas_n * 2,   # 200 by default
@@ -161,6 +182,7 @@ def build_models(args: argparse.Namespace) -> dict:
                 washout       = args.sas_washout,
                 chunk_size    = args.sas_chunk,
                 seed          = args.seed,
+                apply_log     = apply_log,
             )
         except Exception as e:
             print(f"  [skip SAS] {e}")
@@ -196,7 +218,7 @@ def _fmt(d) -> str:
 # ── rolling OOS loop ─────────────────────────────────────────────────────────
 
 def run_oos(
-    log_values: np.ndarray,
+    values:     np.ndarray,
     dates:      pd.DatetimeIndex,
     models:     dict,
     horizons:   list[int],
@@ -206,19 +228,18 @@ def run_oos(
     """
     Rolling OOS with periodic refit.
 
+    Models own all preprocessing; this loop passes raw/log values unchanged.
+
     Per step t:
-      1. Refit all models (if refit_freq steps elapsed) on the z-scored window.
-      2. Predict every horizon h; record (y_pred, y_true, sq_err, abs_err).
-      3. model.update(z_t) — advance state without refit.
+      1. Refit all models (if refit_freq steps elapsed) on the raw/log window.
+      2. model.update(x_t) — advance state (s_last = s_t).
+      3. Predict every horizon h; record (y_pred, y_true, sq_err, abs_err).
 
     Returns a DataFrame with columns:
         config, horizon, test_date, y_pred, y_true, sq_err, abs_err
     """
-    from data.data_loader import fit_scaler, apply_scaler
-
-    T     = len(log_values)
+    T     = len(values)
     H_max = max(horizons)
-    mu, sigma = 0.0, 1.0
     steps_since_refit: dict[str, int] = {n: refit_freq for n in models}
     records: list[dict] = []
 
@@ -227,45 +248,44 @@ def run_oos(
           f"models: {list(models)}")
 
     for t in range(window, T - H_max):
-        train_raw = log_values[t - window: t]
+        train = values[t - window: t]
 
         for name, model in models.items():
             if steps_since_refit[name] >= refit_freq:
-                mu, sigma = fit_scaler(train_raw)
-                train_z   = apply_scaler(train_raw, mu, sigma)
                 try:
-                    model.fit(train_z, horizons)
+                    model.fit(train, horizons)
                     steps_since_refit[name] = 0
                 except Exception as e:
                     print(f"    [fit {name} @ {_fmt(dates[t])}] {e}")
 
-        z_t = apply_scaler(float(log_values[t]), mu, sigma)
+        x_t = float(values[t])
+
+        # Update FIRST so s_last = s_t.  After fit(), s_last = s_{t-1}.
+        for name, model in models.items():
+            try:
+                model.update(x_t)
+                steps_since_refit[name] += 1
+            except Exception as e:
+                print(f"    [update {name} @ {_fmt(dates[t])}] {e}")
 
         for name, model in models.items():
             for h in horizons:
                 if t + h >= T:
                     continue
-                z_target = apply_scaler(float(log_values[t + h]), mu, sigma)
                 try:
-                    y_hat = float(model.predict(h))
+                    y_hat    = float(model.predict(h))
+                    y_true   = float(values[t + h])
                     records.append(dict(
                         config    = name,
                         horizon   = h,
                         test_date = dates[t],
                         y_pred    = y_hat,
-                        y_true    = z_target,
-                        sq_err    = (y_hat - z_target) ** 2,
-                        abs_err   = abs(y_hat - z_target),
+                        y_true    = y_true,
+                        sq_err    = (y_hat - y_true) ** 2,
+                        abs_err   = abs(y_hat - y_true),
                     ))
                 except Exception as e:
                     print(f"    [predict {name} h={h} @ {_fmt(dates[t])}] {e}")
-
-        for name, model in models.items():
-            try:
-                model.update(z_t)
-                steps_since_refit[name] += 1
-            except Exception as e:
-                print(f"    [update {name} @ {_fmt(dates[t])}] {e}")
 
     return pd.DataFrame(records)
 
@@ -310,28 +330,29 @@ def main(argv=None):
         print(f"{'═'*62}")
 
         try:
-            log_values, dates = load_rv(
+            values, dates = load_rv(
                 csv_path,
                 symbol        = symbol,
                 target        = args.target,
-                log_transform = not args.no_log,
+                log_transform = args.log,
             )
         except ValueError as e:
             print(f"  Error loading data: {e}")
             continue
 
-        T = len(log_values)
+        T = len(values)
         if T < args.window + max(args.horizons) + 2:
             print(f"  Skipping: T={T} < window+horizon ({args.window + max(args.horizons) + 2})")
             continue
         print(f"  {_fmt(dates[0])} → {_fmt(dates[-1])},  T={T}")
 
-        models = build_models(args)
+        # apply_log=True when input is raw RV: SAS logs internally
+        models = build_models(args, apply_log=not args.log)
         if not models:
             sys.exit("No models enabled.")
 
         df_eval = run_oos(
-            log_values = log_values,
+            values     = values,
             dates      = dates,
             models     = models,
             horizons   = args.horizons,

@@ -179,7 +179,9 @@ class RNNForecaster(BaseForecaster):
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "RNNForecaster":
         torch.manual_seed(self.seed)
-        history        = np.asarray(history, dtype=np.float32)
+        history        = np.asarray(history, dtype=np.float64)
+        self._mu, self._sigma = self._fit_scaler(history)
+        history        = self._zscore(history, self._mu, self._sigma).astype(np.float32)
         self._horizons = horizons
         n_h            = len(horizons)
 
@@ -250,7 +252,7 @@ class RNNForecaster(BaseForecaster):
         return self
 
     def update(self, x: float) -> "RNNForecaster":
-        self._buf.append(float(x))
+        self._buf.append(float(self._zscore(float(x), self._mu, self._sigma)))
         return self
 
     def predict(self, h: int) -> float:
@@ -259,7 +261,8 @@ class RNNForecaster(BaseForecaster):
         x_t   = torch.from_numpy(x).unsqueeze(0).unsqueeze(-1)   # (1, L, 1)
         with torch.no_grad():
             out = self._net(x_t)
-        return float(out[0, h_idx])
+        y_z = float(out[0, h_idx])
+        return float(self._unzscore(y_z, self._mu, self._sigma))
 
 
 # Backwards-compatible alias

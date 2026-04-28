@@ -448,4 +448,50 @@ GARCH                              & $0.4005 \pm 0.0870$          & $0 / 69$    
 \end{tabular}
 \end{table}
 
+\newpage
+
+\subsection{Polynomial Degree Sweep ($p$ and $q$)}
+
+\begin{table}[ht]
+\centering
+\caption{Polynomial degree sweep — Mean Squared Error.
+         Evaluated across all $N{=}30$ symbols. Means for $p=1, q=0$ are heavily inflated by divergences.
+         All SAS models use $n{=}200$ and spectral norm limit $\rho{=}0.95$.}
+\label{tab:pq_sweep_mse}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{lcccc}
+\toprule
+Model & $h=1$ & $h=5$ & $h=10$ & avg \\
+\midrule
+SAS ($p{=}1, q{=}2$) & $0.3400 \pm 0.0632$ & $0.4860 \pm 0.0896$ & $0.5713 \pm 0.1141$ & $0.4658$ \\
+HAR                  & $0.3427 \pm 0.0628$ & $0.4856 \pm 0.0869$ & $0.5695 \pm 0.1044$ & $0.4659$ \\
+SAS ($p{=}1, q{=}1$) & $0.3410 \pm 0.0618$ & $0.4843 \pm 0.0858$ & $0.5783 \pm 0.1045$ & $0.4679$ \\
+SAS ($p{=}0, q{=}1$) & $0.3404 \pm 0.0621$ & $0.4965 \pm 0.0896$ & $0.5687 \pm 0.1050$ & $0.4685$ \\
+SAS ($p{=}0, q{=}2$) & $0.3400 \pm 0.0632$ & $0.4944 \pm 0.0970$ & $0.5759 \pm 0.1156$ & $0.4701$ \\
+SAS ($p{=}1, q{=}0$) & $0.4937 \pm 0.3138$ & $2.1042 \pm 4.8994$ & $0.7790 \pm 0.5379$ & $1.1257$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\caption{Polynomial degree sweep — MCS frequency.
+         Evaluated on the stable subset of $N{=}26$ symbols.
+         Losses are row-normalised. $\alpha{=}0.10$, $B{=}1000$ bootstrap replications. Sorted by total survivals.}
+\label{tab:pq_sweep_mcs}
+\setlength{\tabcolsep}{8pt}
+\begin{tabular}{lccccc}
+\toprule
+Model & $h=1$ & $h=5$ & $h=10$ & Total Survivals & avg MSE \\
+\midrule
+SAS ($p{=}1, q{=}1$) & $26/26\ (100\%)$ & $25/26\ (96\%)$ & $25/26\ (96\%)$ & $76$ & $0.4683$ \\
+SAS ($p{=}0, q{=}1$) & $23/26\ (88\%)$  & $21/26\ (81\%)$ & $20/26\ (77\%)$ & $64$ & $0.4688$ \\
+SAS ($p{=}1, q{=}2$) & $18/26\ (69\%)$  & $17/26\ (65\%)$ & $15/26\ (58\%)$ & $50$ & $0.4659$ \\
+SAS ($p{=}0, q{=}2$) & $19/26\ (73\%)$  & $16/26\ (62\%)$ & $13/26\ (50\%)$ & $48$ & $0.4681$ \\
+SAS ($p{=}1, q{=}0$) & $0/26\ (0\%)$    & $3/26\ (12\%)$  & $3/26\ (12\%)$  & $6$  & $0.6570$ \\
+HAR                  & $2/26\ (8\%)$    & $0/26\ (0\%)$   & $0/26\ (0\%)$   & $2$  & $0.4659$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \end{document}

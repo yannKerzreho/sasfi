@@ -10,7 +10,8 @@ NLinearForecaster: Subtract last value → ridge on full window residuals.
 DLinearForecaster: Decompose into trend (MA) + seasonal → ridge on both.
                    (DLinear from the same paper.)
 
-All models expect z-scored log-RV input and predict in the same space.
+All models accept raw or log-RV input, z-score internally on the training
+window, and return predictions in the original (input) scale.
 Direct multi-step: one separate regression per horizon h.
 """
 
@@ -207,28 +208,30 @@ class HARForecaster(BaseForecaster):
         return np.array(rows, dtype=np.float64), np.array(ys, dtype=np.float64)
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "HARForecaster":
-        history = np.asarray(history, dtype=np.float64)
+        history          = np.asarray(history, dtype=np.float64)
+        self._mu, self._sigma = self._fit_scaler(history)
+        history_z        = self._zscore(history, self._mu, self._sigma)
         self.alpha_log_: dict[int, float] = {}
         for h in horizons:
-            X, y = self._build_Xy(history, h)
+            X, y = self._build_Xy(history_z, h)
             if len(X) < 5:
                 self._W[h] = np.zeros(4)
             elif self.ridge:
-                # Column-normalised ridge; intercept NOT penalised (see module top).
                 w, alpha         = _har_ridge_cv_select_and_fit(X, y, self.n_cv_folds)
                 self._W[h]       = w
                 self.alpha_log_[h] = alpha
             else:
                 self._W[h] = _ols(X, y)
-        self._buf = deque(history[-self.lags_m:].tolist(), maxlen=self.lags_m)
+        self._buf = deque(history_z[-self.lags_m:].tolist(), maxlen=self.lags_m)
         return self
 
     def update(self, x: float) -> "HARForecaster":
-        self._buf.append(float(x))
+        self._buf.append(float(self._zscore(float(x), self._mu, self._sigma)))
         return self
 
     def predict(self, h: int) -> float:
-        return float(self._features(self._buf) @ self._W[h])
+        y_z = float(self._features(self._buf) @ self._W[h])
+        return float(self._unzscore(y_z, self._mu, self._sigma))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -272,27 +275,30 @@ class NLinearForecaster(BaseForecaster):
         return np.array(rows, dtype=np.float64), np.array(ys, dtype=np.float64)
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "NLinearForecaster":
-        history = np.asarray(history, dtype=np.float64)
+        history          = np.asarray(history, dtype=np.float64)
+        self._mu, self._sigma = self._fit_scaler(history)
+        history_z        = self._zscore(history, self._mu, self._sigma)
         self.alpha_log_: dict[int, float] = {}
         for h in horizons:
-            X, y = self._build_Xy(history, h)
+            X, y = self._build_Xy(history_z, h)
             if len(X) >= 5:
                 alpha        = _ridge_cv_select(X, y, self.n_cv_folds)
                 self._W[h]   = _ridge_fit(X, y, alpha)
                 self.alpha_log_[h] = alpha
             else:
                 self._W[h] = np.zeros(self.lookback)
-        self._buf = deque(history[-self.lookback:].tolist(), maxlen=self.lookback)
+        self._buf = deque(history_z[-self.lookback:].tolist(), maxlen=self.lookback)
         return self
 
     def update(self, x: float) -> "NLinearForecaster":
-        self._buf.append(float(x))
+        self._buf.append(float(self._zscore(float(x), self._mu, self._sigma)))
         return self
 
     def predict(self, h: int) -> float:
         arr    = np.array(self._buf)
         x_norm = arr - arr[-1]
-        return float(x_norm @ self._W[h]) + arr[-1]
+        y_z    = float(x_norm @ self._W[h]) + arr[-1]
+        return float(self._unzscore(y_z, self._mu, self._sigma))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -341,23 +347,26 @@ class DLinearForecaster(BaseForecaster):
         return np.array(rows, dtype=np.float64), np.array(ys, dtype=np.float64)
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "DLinearForecaster":
-        history = np.asarray(history, dtype=np.float64)
+        history          = np.asarray(history, dtype=np.float64)
+        self._mu, self._sigma = self._fit_scaler(history)
+        history_z        = self._zscore(history, self._mu, self._sigma)
         self.alpha_log_: dict[int, float] = {}
         for h in horizons:
-            X, y = self._build_Xy(history, h)
+            X, y = self._build_Xy(history_z, h)
             if len(X) >= 5:
                 alpha        = _ridge_cv_select(X, y, self.n_cv_folds)
                 self._W[h]   = _ridge_fit(X, y, alpha)
                 self.alpha_log_[h] = alpha
             else:
                 self._W[h] = np.zeros(2 * self.lookback)
-        self._buf = deque(history[-self.lookback:].tolist(), maxlen=self.lookback)
+        self._buf = deque(history_z[-self.lookback:].tolist(), maxlen=self.lookback)
         return self
 
     def update(self, x: float) -> "DLinearForecaster":
-        self._buf.append(float(x))
+        self._buf.append(float(self._zscore(float(x), self._mu, self._sigma)))
         return self
 
     def predict(self, h: int) -> float:
         feat = self._decompose(np.array(self._buf))
-        return float(feat @ self._W[h])
+        y_z  = float(feat @ self._W[h])
+        return float(self._unzscore(y_z, self._mu, self._sigma))

@@ -3,9 +3,10 @@ experiments/utils.py — shared helpers for all experiment scripts.
 
 Rolling OOS protocol
 --------------------
-  fit_scaler / apply_scaler freeze z-score stats at each refit.
+  Models own all preprocessing (z-scoring etc).
+  The OOS loop passes raw/log values directly; models return predictions in
+  the same scale.  Losses are squared errors in raw/log space.
   Refit happens every `refit_freq` steps.
-  Predictions are recorded in z-space; losses are squared errors in z-space.
 
 Display helpers
 ---------------
@@ -23,7 +24,7 @@ import pandas as pd
 ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
-from data.data_loader import load_rv, fit_scaler, apply_scaler
+from data.data_loader import load_rv
 
 HORIZONS   = [1, 5, 22]
 WINDOW     = 2000
@@ -33,7 +34,7 @@ REFIT_FREQ = 20
 # ── rolling OOS ──────────────────────────────────────────────────────────────
 
 def quick_oos(
-    log_values: np.ndarray,
+    values:     np.ndarray,
     dates:      "pd.DatetimeIndex",
     models:     dict,
     horizons:   list[int] = HORIZONS,
@@ -44,38 +45,36 @@ def quick_oos(
     """
     Rolling OOS evaluation.
 
+    Models receive raw/log values and return predictions in the same scale.
+    All preprocessing (z-scoring etc) is done inside each model.
+
     Returns
     -------
-    losses : {model_name: {horizon: [sq_errors]}}
+    losses : {model_name: {horizon: [sq_errors]}}  — errors in input scale.
     """
-    T     = len(log_values)
+    T     = len(values)
     H_max = max(horizons)
-    mu, sigma = 0.0, 1.0
     steps_since_refit = {n: refit_freq for n in models}
     losses = {n: {h: [] for h in horizons} for n in models}
     limit  = (window + max_steps) if max_steps else (T - H_max)
 
     for t in range(window, min(limit, T - H_max)):
-        train_raw = log_values[t - window: t]
+        train = values[t - window: t]
 
         for name, model in models.items():
             if steps_since_refit[name] >= refit_freq:
-                mu, sigma = fit_scaler(train_raw)
-                train_z   = apply_scaler(train_raw, mu, sigma)
                 try:
-                    model.fit(train_z, horizons)
+                    model.fit(train, horizons)
                     steps_since_refit[name] = 0
                 except Exception as e:
                     print(f"  [fit {name}] {e}")
 
-        z_t = apply_scaler(float(log_values[t]), mu, sigma)
+        x_t = float(values[t])
 
         # Update FIRST so s_last = s_t.  After fit(), s_last = s_{t-1}.
-        # The convention is z_{t+1} = W·s_t + ε, so we must ingest z_t
-        # before predicting z_{t+h}.
         for name, model in models.items():
             try:
-                model.update(z_t)
+                model.update(x_t)
                 steps_since_refit[name] += 1
             except Exception as e:
                 print(f"  [upd {name}] {e}")
@@ -84,10 +83,10 @@ def quick_oos(
             for h in horizons:
                 if t + h >= T:
                     continue
-                z_tgt = apply_scaler(float(log_values[t + h]), mu, sigma)
                 try:
                     y_hat = float(model.predict(h))
-                    losses[name][h].append((y_hat - z_tgt) ** 2)
+                    y_tgt = float(values[t + h])
+                    losses[name][h].append((y_hat - y_tgt) ** 2)
                 except Exception as e:
                     print(f"  [pred {name} h={h}] {e}")
 
