@@ -54,6 +54,14 @@ from collections import deque
 
 from .base import BaseForecaster
 from .sas_utils import BasePoly, LinearPoly, DiagonalPoly, TrigoPoly
+from .ridge import (
+    ALPHAS        as _ALPHAS,
+    ALPHAS_GROUPED as _ALPHAS_GROUPED,
+    ridge_cv_select as _ridge_cv,
+    ridge_fit       as _ridge_fit,
+    ridge_cv_grouped     as _ridge_cv_grouped,
+    ridge_fit_grouped    as _ridge_fit_grouped,
+)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -135,132 +143,8 @@ def _step_once(basis, s, z):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# Ridge helpers (pure NumPy — fast for typical training sizes ~500 × 100)
-# ══════════════════════════════════════════════════════════════════════════════
-
-# 37 log-spaced values from 10^-4 to 10^4 (spacing 0.25 in log10).
-# Extended from [-2, 3] after exp_alpha.py showed 59% boundary hits at h=22.
-_ALPHAS = [10 ** x for x in np.arange(-4, 5.01, 0.25)]
-
-# Coarser grid for grouped CV: every 6th value → 7 candidates.
-# 7² = 49 combos (2-group) · 7³ = 343 combos (3-group) — fast, ~spacing 1.5 log10.
-_ALPHAS_GROUPED = _ALPHAS[::6]   # spacing 1.5 in log10
-
-
-def _ridge_cv(S: np.ndarray, Y: np.ndarray, n_folds: int, alphas) -> float:
-    """Rolling-window cross-validation to pick the best ridge alpha."""
-    T, n     = S.shape
-    val_size = max(12, T // (n_folds + 1))
-    best, best_mse = alphas[0], np.inf
-    for alpha in alphas:
-        mses = []
-        for fold in range(n_folds):
-            cut = T - (n_folds - fold) * val_size
-            if cut < max(5, n // 10):
-                continue
-            A   = S[:cut].T @ S[:cut] + alpha * np.eye(n)
-            w   = np.linalg.solve(A, S[:cut].T @ Y[:cut])
-            err = S[cut: cut + val_size] @ w - Y[cut: cut + val_size]
-            mses.append(float(np.mean(err ** 2)))
-        if mses and np.mean(mses) < best_mse:
-            best_mse = np.mean(mses)
-            best     = alpha
-    return best
-
-
-def _ridge_fit(S: np.ndarray, Y: np.ndarray, alpha: float) -> np.ndarray:
-    """Ridge regression: (S.T S + αI)⁻¹ S.T Y → weight vector."""
-    n = S.shape[1]
-    return np.linalg.solve(S.T @ S + alpha * np.eye(n), S.T @ Y)
-
-
-def _ridge_cv_grouped(
-    S: np.ndarray,
-    Y: np.ndarray,
-    group_sizes: list,
-    n_folds: int,
-    alpha_grid_1d: list,
-) -> tuple:
-    """
-    Block-diagonal ridge CV with a different alpha per feature group.
-
-    The penalty matrix is Λ = diag(α₀·I_{g₀}, α₁·I_{g₁}, …) where group d
-    occupies columns [Σ_{k<d} g_k : Σ_{k≤d} g_k] of S.
-
-    The Gram matrix S[:cut].T @ S[:cut] is precomputed once per fold; each
-    alpha-combo then only modifies the diagonal — O(n) — before solving.
-
-    Parameters
-    ----------
-    S             : (T, n) feature matrix, columns ordered by group
-    Y             : (T,)   targets
-    group_sizes   : list of ints summing to n
-    n_folds       : rolling CV folds
-    alpha_grid_1d : 1-D alpha candidates searched independently per group
-
-    Returns
-    -------
-    best_alphas : tuple of floats, one per group
-    """
-    from itertools import product as cart_product
-
-    T, n     = S.shape
-    val_size = max(12, T // (n_folds + 1))
-    combos   = list(cart_product(alpha_grid_1d, repeat=len(group_sizes)))
-
-    # Build λ vectors once (avoid recomputing inside the inner loop)
-    lam_vecs = []
-    for combo in combos:
-        lam_vecs.append(
-            np.concatenate([a * np.ones(g) for a, g in zip(combo, group_sizes)])
-        )
-
-    sum_mse = np.full(len(combos), 0.0)
-    cnt_mse = np.zeros(len(combos), dtype=int)
-    diag_ix = np.diag_indices(n)
-
-    for fold in range(n_folds):
-        cut = T - (n_folds - fold) * val_size
-        if cut < max(5, n // 10):
-            continue
-        STS      = S[:cut].T @ S[:cut]         # (n, n) — reused per combo
-        STY      = S[:cut].T @ Y[:cut]          # (n,)
-        val_S    = S[cut: cut + val_size]
-        val_Y    = Y[cut: cut + val_size]
-        sts_diag = STS[diag_ix].copy()
-
-        for ci, lam in enumerate(lam_vecs):
-            A            = STS.copy()
-            A[diag_ix]   = sts_diag + lam
-            w            = np.linalg.solve(A, STY)
-            err          = val_S @ w - val_Y
-            sum_mse[ci] += float(np.mean(err ** 2))
-            cnt_mse[ci] += 1
-
-    valid = cnt_mse > 0
-    if not valid.any():
-        return combos[0]
-    avg = np.where(valid, sum_mse / np.maximum(cnt_mse, 1), np.inf)
-    return combos[int(np.argmin(avg))]
-
-
-def _ridge_fit_grouped(
-    S: np.ndarray,
-    Y: np.ndarray,
-    group_sizes: list,
-    alphas: tuple,
-) -> np.ndarray:
-    """Block-diagonal ridge: (S.T S + Λ)⁻¹ S.T Y."""
-    n   = S.shape[1]
-    lam = np.concatenate([a * np.ones(g) for a, g in zip(alphas, group_sizes)])
-    A   = S.T @ S
-    A[np.diag_indices(n)] += lam
-    return np.linalg.solve(A, S.T @ Y)
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # SASForecaster
-# ══════════════════════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════════════    
 
 class SASForecaster(BaseForecaster):
     """
@@ -284,11 +168,10 @@ class SASForecaster(BaseForecaster):
     seed         : JAX random seed for basis initialisation.
     alphas       : ridge penalty candidates (default: log-spaced 1e-3…1e3).
     """
-
     def __init__(
         self,
         n_reservoir:   int   = 100,
-        basis                = "diagonal",   # str | BasePoly instance
+        basis                = "diagonal",
         spectral_norm: float = 0.9,
         p_degree:      int   = 1,
         q_degree:      int   = 1,
@@ -300,6 +183,7 @@ class SASForecaster(BaseForecaster):
         apply_log:     bool  = False,
         input_scale:   float = 4.0,
         clip:          bool  = True,
+        target_log:    bool  = False,
     ):
         self.n_reservoir = n_reservoir
         self.washout     = washout
@@ -307,92 +191,76 @@ class SASForecaster(BaseForecaster):
         self.n_cv_folds  = n_cv_folds
         self.seed        = seed
         self.alphas      = list(alphas) if alphas is not None else _ALPHAS
+        
+        # Data Pipeline Controls
         self.apply_log   = apply_log
+        self.target_log  = target_log
         self.input_scale = input_scale
         self.clip        = clip 
 
-        # ── resolve basis spec - uninitialized BasePoly ───────────────────
         if isinstance(basis, str):
-            _map = {
-                "diagonal": DiagonalPoly,
-                "linear":   LinearPoly,
-                "trigo":    TrigoPoly,
-            }
+            _map = {"diagonal": DiagonalPoly, "linear": LinearPoly, "trigo": TrigoPoly}
             if basis not in _map:
-                raise ValueError(
-                    f"Unknown basis string '{basis}'. "
-                    f"Choose from {list(_map)} or pass a BasePoly instance."
-                )
+                raise ValueError(f"Unknown basis string '{basis}'.")
             self._basis: BasePoly = _map[basis](p_degree, q_degree, spectral_norm)
         elif isinstance(basis, BasePoly):
             self._basis = basis
         else:
-            raise TypeError(
-                f"basis must be a str or BasePoly instance, got {type(basis)}"
-            )
+            raise TypeError("basis must be a str or BasePoly instance")
 
         self._W: dict[int, np.ndarray] = {}
         self._s_last: np.ndarray | None = None
 
-    # ── preprocessing helpers ─────────────────────────────────────────────
-
     def _to_log(self, arr: np.ndarray) -> np.ndarray:
-        """Apply log transform when apply_log=True; otherwise identity."""
-        if self.apply_log:
-            return np.log(np.maximum(arr, 1e-10))
-        return arr
+        return np.log(np.maximum(arr, 1e-10))
 
     def _to_log_scalar(self, x: float) -> float:
-        if self.apply_log:
-            return float(np.log(max(x, 1e-10)))
-        return x
-
-    def _to_reservoir_input(self, arr_z: np.ndarray) -> np.ndarray:
-        """z-scored array → scaled, clipped reservoir input."""
-        return np.clip(arr_z / self.input_scale, -1.0, 1.0) if self.clip else arr_z / self.input_scale
-
-    def _pred_to_output(self, y_z: float) -> float:
-        """Inverse-transform readout from z-space back to input scale."""
-        y_log = float(self._unzscore(y_z, self._mu, self._sigma))
-        if self.apply_log:
-            return float(np.exp(y_log))
-        return y_log
-
-    # ── BaseForecaster interface ───────────────────────────────────────────
+        return float(np.log(max(x, 1e-10)))
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "SASForecaster":
-        """
-        Fit the readout for each horizon.
+        history = np.asarray(history, dtype=np.float64)
+        
+        # 1. Prepare Target Data
+        if self.target_log:
+            target_raw = self._to_log(history)
+        else:
+            target_raw = history
+            
+        self._mu_target, self._sigma_target = self._fit_scaler(target_raw)
+        Y_z = self._zscore(target_raw, self._mu_target, self._sigma_target).astype(np.float32)
 
-        1. Optional log transform; z-score → reservoir input (scaled+clipped).
-        2. (Re-)initialise the basis with a fresh JAX random key.
-        3. Run the two-level parallel scan → (T, n) state matrix.
-        4. For each h: ridge CV on (states, z-scored targets).
-        """
-        history      = np.asarray(history, dtype=np.float64)
-        history_log  = self._to_log(history)
-        self._mu, self._sigma = self._fit_scaler(history_log)
-        history_z    = self._zscore(history_log, self._mu, self._sigma)
-        history_u    = self._to_reservoir_input(history_z).astype(np.float32)
+        # 2. Prepare Input Data
+        if self.apply_log:
+            input_raw = self._to_log(history)
+        else:
+            input_raw = history
+            
+        self._mu_input, self._sigma_input = self._fit_scaler(input_raw)
+        history_z = self._zscore(input_raw, self._mu_input, self._sigma_input)
+        
+        # Scale and clip for reservoir
+        if self.clip:
+            history_u = np.clip(history_z / self.input_scale, -1.0, 1.0)
+        else:
+            history_u = history_z / self.input_scale
+            
+        history_u = history_u.astype(np.float32)
 
         T = len(history_u)
-        u = jnp.array(history_u[:, None])   # (T, 1) — univariate
+        u = jnp.array(history_u[:, None])
 
-        # Always re-init: ensures each OOS refit gets a fresh random reservoir
         key         = jax.random.PRNGKey(self.seed)
         self._basis = self._basis.initialize(self.n_reservoir, key)
 
         s0             = jnp.zeros(self.n_reservoir)
-        states, s_last = _collect_states(
-            self._basis, u, s0, self.n_reservoir, self.chunk_size
-        )
-        states_np    = np.array(states, dtype=np.float32)   # (T, n)
-        self._s_last = np.array(s_last, dtype=np.float32)   # (n,)
+        states, s_last = _collect_states(self._basis, u, s0, self.n_reservoir, self.chunk_size)
+        states_np      = np.array(states, dtype=np.float32)
+        self._s_last   = np.array(s_last, dtype=np.float32)
 
-        n            = self.n_reservoir
-        self._W      = {}
+        n = self.n_reservoir
+        self._W = {}
         self.alpha_log_: dict[int, float] = {}
-        Y_z          = history_z.astype(np.float32)
+        
         for h in horizons:
             S = states_np[self.washout: T - h]
             Y = Y_z      [self.washout + h: T]
@@ -406,45 +274,42 @@ class SASForecaster(BaseForecaster):
         return self
 
     def update(self, x: float) -> "SASForecaster":
-        """Advance the reservoir state by one step (streaming, JIT'd)."""
-        x_log        = self._to_log_scalar(float(x))
-        x_z          = float(self._zscore(x_log, self._mu, self._sigma))
-        x_u          = float(np.clip(x_z / self.input_scale, -1.0, 1.0)) if self.clip else float(x_z / self.input_scale)
-        z            = jnp.array([x_u], dtype=jnp.float32)
-        s_new        = _step_once(self._basis, jnp.array(self._s_last), z)
+        x_raw = float(x)
+        if self.apply_log:
+            x_raw = self._to_log_scalar(x_raw)
+            
+        x_z = float(self._zscore(x_raw, self._mu_input, self._sigma_input))
+        
+        if self.clip:
+            x_u = float(np.clip(x_z / self.input_scale, -1.0, 1.0))
+        else:
+            x_u = float(x_z / self.input_scale)
+            
+        z = jnp.array([x_u], dtype=jnp.float32)
+        s_new = _step_once(self._basis, jnp.array(self._s_last), z)
         self._s_last = np.array(s_new, dtype=np.float32)
         return self
 
     def predict(self, h: int) -> float:
-        """Linear readout in z-space, inverse-transformed to input scale."""
-        y_z = float(self._s_last @ self._W[h])
-        return self._pred_to_output(y_z)
+        y_z_target = float(self._s_last @ self._W[h])
+        y_unscaled = float(self._unzscore(y_z_target, self._mu_target, self._sigma_target))
+        
+        if self.target_log:
+            return float(np.exp(y_unscaled))
+        return y_unscaled
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# SASEnsemble — average K independent reservoirs (variance reduction)
+# SASEnsemble
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SASEnsemble(BaseForecaster):
-    """
-    Ensemble of K independent SASForecasters averaged at prediction time.
-
-    Each member uses seed = base_seed + k, producing diverse random reservoirs.
-    Averaging reduces variance ∝ 1/√K without changing the bias.
-
-    Parameters
-    ----------
-    K        : number of ensemble members.
-    **kwargs : forwarded to each SASForecaster; `seed` is offset by member k.
-    """
-
-    def __init__(self, K: int = 5, apply_log: bool = False,
-                 input_scale: float = 4.0, **kwargs):
+    def __init__(self, K: int = 5, apply_log: bool = False, input_scale: float = 4.0, target_log: bool = False, **kwargs):
         self.K       = K
         base_seed    = kwargs.pop("seed", 42)
         self.members = [
             SASForecaster(seed=base_seed + k, apply_log=apply_log,
-                          input_scale=input_scale, **kwargs)
+                          input_scale=input_scale, target_log=target_log, **kwargs)
             for k in range(K)
         ]
 
@@ -463,26 +328,10 @@ class SASEnsemble(BaseForecaster):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# AugSASForecaster — reservoir state augmented with HAR features
+# AugSASForecaster
 # ══════════════════════════════════════════════════════════════════════════════
 
 class AugSASForecaster(BaseForecaster):
-    """
-    Augmented SAS: concatenates the reservoir state with HAR features before
-    the ridge readout.
-
-    Feature vector at time t:
-        f_t = [ s_t (n,)  |  1, RV_d, RV_w, RV_m (4,) ]   shape (n+4,)
-
-    The HAR block guarantees the readout is at least as expressive as pure HAR
-    (set reservoir weights to zero to recover HAR exactly), while the reservoir
-    adds nonlinear long-memory structure on top.
-
-    Parameters
-    ----------
-    Same as SASForecaster, plus lags_w / lags_m for the HAR feature windows.
-    """
-
     def __init__(
         self,
         n_reservoir:   int   = 200,
@@ -499,12 +348,15 @@ class AugSASForecaster(BaseForecaster):
         lags_m:        int   = 22,
         apply_log:     bool  = False,
         input_scale:   float = 4.0,
+        clip:          bool  = True,
+        target_log:    bool  = False,
     ):
         self._sas = SASForecaster(
             n_reservoir=n_reservoir, basis=basis,
             spectral_norm=spectral_norm, p_degree=p_degree, q_degree=q_degree,
             washout=washout, chunk_size=chunk_size, n_cv_folds=n_cv_folds,
             seed=seed, alphas=alphas, apply_log=apply_log, input_scale=input_scale,
+            clip=clip, target_log=target_log,
         )
         self.lags_w     = lags_w
         self.lags_m     = lags_m
@@ -521,48 +373,61 @@ class AugSASForecaster(BaseForecaster):
         return np.array([1.0, rv_d, rv_w, rv_m], dtype=np.float32)
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "AugSASForecaster":
-        history     = np.asarray(history, dtype=np.float64)
-        T           = len(history)
-        n           = self._sas.n_reservoir
+        history = np.asarray(history, dtype=np.float64)
+        T       = len(history)
+        n       = self._sas.n_reservoir
 
-        # ── preprocessing (shared with SASForecaster) ──────────────────────
-        history_log = self._sas._to_log(history)
-        self._sas._mu, self._sas._sigma = self._sas._fit_scaler(history_log)
-        history_z   = self._sas._zscore(history_log, self._sas._mu, self._sas._sigma)
-        history_u   = self._sas._to_reservoir_input(history_z).astype(np.float32)
+        # Input preprocessing 
+        if self._sas.apply_log:
+            history_input = self._sas._to_log(history)
+        else:
+            history_input = history
+            
+        self._sas._mu_input, self._sas._sigma_input = self._sas._fit_scaler(history_input)
+        history_z_input = self._sas._zscore(history_input, self._sas._mu_input, self._sas._sigma_input)
+        
+        if self._sas.clip:
+            history_u = np.clip(history_z_input / self._sas.input_scale, -1.0, 1.0).astype(np.float32)
+        else:
+            history_u = (history_z_input / self._sas.input_scale).astype(np.float32)
 
-        # ── run reservoir (re-init + parallel scan) ────────────────────────
+        # Target preprocessing
+        if self._sas.target_log:
+            history_target = self._sas._to_log(history)
+        else:
+            history_target = history
+            
+        self._sas._mu_target, self._sas._sigma_target = self._sas._fit_scaler(history_target)
+        Y_z = self._sas._zscore(history_target, self._sas._mu_target, self._sas._sigma_target).astype(np.float32)
+
+        # Run reservoir
         u              = jnp.array(history_u[:, None])
         key            = jax.random.PRNGKey(self._sas.seed)
         self._sas._basis = self._sas._basis.initialize(n, key)
 
         s0             = jnp.zeros(n)
-        states, s_last = _collect_states(
-            self._sas._basis, u, s0, n, self._sas.chunk_size
-        )
-        states_np         = np.array(states, dtype=np.float32)   # (T, n)
+        states, s_last = _collect_states(self._sas._basis, u, s0, n, self._sas.chunk_size)
+        states_np         = np.array(states, dtype=np.float32)
         self._sas._s_last = np.array(s_last, dtype=np.float32)
 
-        # ── HAR feature matrix (in z-space) ───────────────────────────────
-        history_z_f32 = history_z.astype(np.float32)
+        # HAR features (using the TARGET distribution for HAR logic)
         har_buf   = deque(maxlen=self.lags_m)
         har_feats = []
         for t in range(T):
-            har_buf.append(float(history_z_f32[t]))
+            har_buf.append(float(Y_z[t]))
             arr  = np.array(har_buf)
             rv_d = arr[-1]
             rv_w = arr[-min(self.lags_w, len(arr)):].mean()
             rv_m = arr[-min(self.lags_m, len(arr)):].mean()
             har_feats.append([1.0, rv_d, rv_w, rv_m])
-        har_feats = np.array(har_feats, dtype=np.float32)     # (T, 4)
-
-        aug   = np.concatenate([states_np, har_feats], axis=1) # (T, n+4)
+            
+        har_feats = np.array(har_feats, dtype=np.float32)
+        aug   = np.concatenate([states_np, har_feats], axis=1)
         n_aug = aug.shape[1]
-        self._buf = deque(history_z_f32[-self.lags_m:].tolist(), maxlen=self.lags_m)
+        self._buf = deque(Y_z[-self.lags_m:].tolist(), maxlen=self.lags_m)
 
-        # ── ridge per horizon (targets in z-space) ─────────────────────────
+        # Ridge
         wo    = self._sas.washout
-        Y_z   = history_z_f32
         self._W = {}
         for h in horizons:
             S = aug[wo: T - h]
@@ -577,81 +442,33 @@ class AugSASForecaster(BaseForecaster):
 
     def update(self, x: float) -> "AugSASForecaster":
         self._sas.update(x)
-        x_log = self._sas._to_log_scalar(float(x))
-        x_z   = float(self._sas._zscore(x_log, self._sas._mu, self._sas._sigma))
-        self._buf.append(x_z)
+        
+        # Update HAR buffer with the target distribution
+        x_raw = float(x)
+        if self._sas.target_log:
+            x_raw = self._sas._to_log_scalar(x_raw)
+            
+        x_z_target = float(self._sas._zscore(x_raw, self._sas._mu_target, self._sas._sigma_target))
+        self._buf.append(x_z_target)
         return self
 
     def predict(self, h: int) -> float:
         s   = self._sas._s_last.astype(np.float32)
         har = self._har_feat()
         f   = np.concatenate([s, har])
-        y_z = float(f @ self._W[h])
-        return self._sas._pred_to_output(y_z)
+        y_z_target = float(f @ self._W[h])
+        
+        y_unscaled = float(self._sas._unzscore(y_z_target, self._sas._mu_target, self._sas._sigma_target))
+        if self._sas.target_log:
+            return float(np.exp(y_unscaled))
+        return y_unscaled
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# MultiDegreeSASForecaster — per-degree sub-reservoirs with grouped ridge
+# MultiDegreeSASForecaster
 # ══════════════════════════════════════════════════════════════════════════════
 
 class MultiDegreeSASForecaster(BaseForecaster):
-    """
-    SAS with separate sub-reservoirs for each polynomial degree and
-    per-group ridge regularisation in the readout.
-
-    Architecture
-    ------------
-    The reservoir is split into (max_degree + 1) independent sub-reservoirs:
-
-        Group d  (d = 0 … max_degree):
-            n_per_group dimensions
-            DiagonalPoly(p_degree=d, q_degree=q_degree, spectral_norm=sn)
-
-    Group 0 (p_degree=0): *linear filter* — P is constant, transition matrix
-        does not depend on input; only Q responds to z via Q_0 + Q_1·z.
-    Group 1 (p_degree=1): *multiplicative gating* — P(z) = P_0 + P_1·z,
-        so state memory is modulated by the current input.
-    Group 2 (p_degree=2): *quadratic gating* — P(z) adds P_2·z² term.
-
-    Readout
-    -------
-    States are concatenated:  f_t = [s^(0)_t ; … ; s^(D)_t]  ∈ ℝ^{n_total}
-    Ridge penalty is block-diagonal:
-        Λ = diag(α₀·I_{n_per_group}, α₁·I_{n_per_group}, …)
-
-    Per-group alphas are selected jointly by rolling CV over a Cartesian
-    product of the 1-D alpha grid (one per group).  The Gram matrix
-    S.T @ S is precomputed once per fold; only the diagonal changes per combo
-    → efficient for moderate n_per_group.
-
-    Parameters
-    ----------
-    n_per_group   : size of each sub-reservoir. Total n = n_per_group × (max_degree+1).
-    max_degree    : highest p_degree used. Number of groups = max_degree + 1.
-    q_degree      : Q polynomial degree, same for all groups (default 1).
-    spectral_norm : spectral norm constraint, same for all groups.
-    washout       : steps discarded from the start of each training window.
-    chunk_size    : static chunk size for the two-level scan.
-    n_cv_folds    : rolling CV folds.
-    seed          : JAX PRNG seed (each group gets a different sub-key).
-    alphas_1d     : 1-D alpha candidates for grouped CV.
-                    Defaults to _ALPHAS_GROUPED (~13 values, spacing 0.75 log10).
-
-    p_degrees     : explicit list of p_degree per group, e.g. [1, 1, 1].
-                    If provided, overrides the ``max_degree`` enumeration
-                    (0, 1, …, max_degree).  Length determines the number of groups.
-    q_degrees     : explicit list of q_degree per group, e.g. [1, 2, 3].
-                    If provided, overrides the scalar ``q_degree`` for every group.
-                    Must have the same length as ``p_degrees`` (or max_degree+1).
-
-    Use ``p_degrees`` / ``q_degrees`` together to build mixed-degree reservoirs:
-        # Mix q-degrees, all p=1 (n_per_group=100, total=200)
-        MultiDegreeSASForecaster(n_per_group=100, p_degrees=[1,1], q_degrees=[1,2])
-
-        # Mix p and q simultaneously
-        MultiDegreeSASForecaster(n_per_group=100, p_degrees=[0,1], q_degrees=[1,2])
-    """
-
     def __init__(
         self,
         n_per_group:   int         = 50,
@@ -668,6 +485,8 @@ class MultiDegreeSASForecaster(BaseForecaster):
         q_degrees:     list | None = None,
         apply_log:     bool        = False,
         input_scale:   float       = 4.0,
+        clip:          bool        = True,
+        target_log:    bool        = False,
     ):
         self.n_per_group   = n_per_group
         self.max_degree    = max_degree
@@ -679,64 +498,61 @@ class MultiDegreeSASForecaster(BaseForecaster):
         self.seed          = seed
         self.alphas_1d     = list(alphas_1d) if alphas_1d is not None else _ALPHAS_GROUPED
         self.grouped_ridge = grouped_ridge
+        
         self.apply_log     = apply_log
         self.input_scale   = input_scale
+        self.clip          = clip
+        self.target_log    = target_log
 
-        # Resolve per-group p/q degree lists
         _p_list = list(p_degrees) if p_degrees is not None else list(range(max_degree + 1))
         _q_list = list(q_degrees) if q_degrees is not None else [q_degree] * len(_p_list)
         if len(_p_list) != len(_q_list):
-            raise ValueError(
-                f"p_degrees and q_degrees must have the same length, "
-                f"got {len(_p_list)} vs {len(_q_list)}"
-            )
+            raise ValueError("p_degrees and q_degrees must have same length")
         self._p_list = _p_list
         self._q_list = _q_list
 
-        # Uninitialised basis objects — one per group
         self._bases: list = [
             DiagonalPoly(p_degree=p_d, q_degree=q_d, spectral_norm=spectral_norm)
             for p_d, q_d in zip(_p_list, _q_list)
         ]
-        self._s_lasts: list                  = []   # one (n_per_group,) per group
+        self._s_lasts: list                  = []
         self._W:       dict[int, np.ndarray] = {}
 
-    # ── derived properties ────────────────────────────────────────────────────
-
     @property
-    def n_groups(self) -> int:
-        return len(self._bases)
-
+    def n_groups(self) -> int: return len(self._bases)
     @property
-    def n_reservoir(self) -> int:
-        """Total reservoir size across all groups."""
-        return self.n_per_group * self.n_groups
-
+    def n_reservoir(self) -> int: return self.n_per_group * self.n_groups
     @property
-    def group_sizes(self) -> list:
-        return [self.n_per_group] * self.n_groups
-
-    # ── BaseForecaster interface ───────────────────────────────────────────────
+    def group_sizes(self) -> list: return [self.n_per_group] * self.n_groups
 
     def fit(self, history: np.ndarray, horizons: list[int]) -> "MultiDegreeSASForecaster":
-        """
-        For each group: re-init basis, run parallel scan → sub-state matrix.
-        Concatenate sub-states → block-featured design matrix.
-        Fit per-group ridge via grouped CV per horizon.
-        """
         history = np.asarray(history, dtype=np.float64)
         T       = len(history)
 
-        # ── preprocessing ─────────────────────────────────────────────────
-        if self.apply_log:
-            history_log = np.log(np.maximum(history, 1e-10))
+        # Target Preprocessing
+        if self.target_log:
+            history_target = np.log(np.maximum(history, 1e-10))
         else:
-            history_log = history
-        self._mu, self._sigma = self._fit_scaler(history_log)
-        history_z = self._zscore(history_log, self._mu, self._sigma)
-        history_u = np.clip(history_z / self.input_scale, -1.0, 1.0).astype(np.float32) if self.clip else (history_z / self.input_scale).astype(np.float32)
+            history_target = history
+            
+        self._mu_target, self._sigma_target = self._fit_scaler(history_target)
+        Y_z = self._zscore(history_target, self._mu_target, self._sigma_target).astype(np.float32)
 
-        u        = jnp.array(history_u[:, None])   # (T, 1)
+        # Input Preprocessing
+        if self.apply_log:
+            history_input = np.log(np.maximum(history, 1e-10))
+        else:
+            history_input = history
+            
+        self._mu_input, self._sigma_input = self._fit_scaler(history_input)
+        history_z_input = self._zscore(history_input, self._mu_input, self._sigma_input)
+        
+        if self.clip:
+            history_u = np.clip(history_z_input / self.input_scale, -1.0, 1.0).astype(np.float32)
+        else:
+            history_u = (history_z_input / self.input_scale).astype(np.float32)
+
+        u        = jnp.array(history_u[:, None])
         base_key = jax.random.PRNGKey(self.seed)
         states_list: list[np.ndarray] = []
         self._s_lasts = []
@@ -747,18 +563,15 @@ class MultiDegreeSASForecaster(BaseForecaster):
             self._bases[d] = init_basis
 
             s0             = jnp.zeros(self.n_per_group)
-            states_d, s_last_d = _collect_states(
-                init_basis, u, s0, self.n_per_group, self.chunk_size
-            )
+            states_d, s_last_d = _collect_states(init_basis, u, s0, self.n_per_group, self.chunk_size)
             states_list.append(np.array(states_d,  dtype=np.float32))
             self._s_lasts.append(np.array(s_last_d, dtype=np.float32))
 
-        all_states = np.concatenate(states_list, axis=1)   # (T, n_total)
+        all_states = np.concatenate(states_list, axis=1)
         gsizes     = self.group_sizes
         wo         = self.washout
-        Y_z        = history_z.astype(np.float32)
 
-        self._W         = {}
+        self._W = {}
         self.alpha_log_: dict[int, object] = {}
 
         for h in horizons:
@@ -779,24 +592,28 @@ class MultiDegreeSASForecaster(BaseForecaster):
         return self
 
     def update(self, x: float) -> "MultiDegreeSASForecaster":
-        """Advance all sub-reservoir states by one step."""
+        x_raw = float(x)
         if self.apply_log:
-            x_log = float(np.log(max(float(x), 1e-10)))
+            x_raw = float(np.log(max(x_raw, 1e-10)))
+            
+        x_z = float(self._zscore(x_raw, self._mu_input, self._sigma_input))
+        
+        if self.clip:
+            x_u = float(np.clip(x_z / self.input_scale, -1.0, 1.0))
         else:
-            x_log = float(x)
-        x_z = float(self._zscore(x_log, self._mu, self._sigma))
-        x_u = float(np.clip(x_z / self.input_scale, -1.0, 1.0)) if self.clip else float(x_z / self.input_scale)
-        z   = jnp.array([x_u], dtype=jnp.float32)
+            x_u = float(x_z / self.input_scale)
+            
+        z = jnp.array([x_u], dtype=jnp.float32)
         for d, basis in enumerate(self._bases):
-            s_new          = _step_once(basis, jnp.array(self._s_lasts[d]), z)
+            s_new = _step_once(basis, jnp.array(self._s_lasts[d]), z)
             self._s_lasts[d] = np.array(s_new, dtype=np.float32)
         return self
 
     def predict(self, h: int) -> float:
-        """Linear readout over concatenated sub-states, inverse-transformed."""
-        s   = np.concatenate(self._s_lasts)
-        y_z = float(s @ self._W[h])
-        y_log = float(self._unzscore(y_z, self._mu, self._sigma))
-        if self.apply_log:
-            return float(np.exp(y_log))
-        return y_log
+        s = np.concatenate(self._s_lasts)
+        y_z_target = float(s @ self._W[h])
+        
+        y_unscaled = float(self._unzscore(y_z_target, self._mu_target, self._sigma_target))
+        if self.target_log:
+            return float(np.exp(y_unscaled))
+        return y_unscaled

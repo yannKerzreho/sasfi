@@ -50,7 +50,7 @@ def quick_oos(
 
     Returns
     -------
-    losses : {model_name: {horizon: [sq_errors]}}  — errors in input scale.
+    losses : {model_name: {horizon: [sq_errors]}}  — raw, unscaled.
     """
     T     = len(values)
     H_max = max(horizons)
