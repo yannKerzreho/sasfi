@@ -8,31 +8,17 @@
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.1}HAR — Heterogeneous Autoregressive Model (Corsi 2009)}{1}{subsection.2.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.2}NLinear and DLinear (Zeng et al.\ 2023)}{1}{subsection.2.2}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.3}GARCH — AR($p$)-GARCH(1,1)}{1}{subsection.2.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}SAS — State Affine System}{1}{subsection.2.4}\protected@file@percent }
-\newlabel{eq:sas-rec}{{6}{2}{SAS — State Affine System}{equation.6}{}}
-\newlabel{eq:combine}{{8}{2}{SAS — State Affine System}{equation.8}{}}
-\@writefile{loa}{\contentsline {algocf}{\numberline {1}{\ignorespaces Two-Level Parallel Scan — compute $s_1,\ldots  ,s_T$ from $z_1,\ldots  ,z_T$}}{2}{algocf.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}SAS — State Affine System}{2}{subsection.2.4}\protected@file@percent }
+\@writefile{loa}{\contentsline {algocf}{\numberline {1}{\ignorespaces Two-Level Parallel Scan — compute $s_1,\ldots  ,s_T$}}{3}{algocf.1}\protected@file@percent }
 \@writefile{toc}{\contentsline {subsection}{\numberline {2.5}RNN — LSTM / GRU / LRU}{3}{subsection.2.5}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {3}Evaluation Protocol}{3}{section.3}\protected@file@percent }
-\@writefile{loa}{\contentsline {algocf}{\numberline {2}{\ignorespaces Rolling Out-of-Sample Evaluation}}{3}{algocf.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Rolling Out-of-Sample Loop}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{loa}{\contentsline {algocf}{\numberline {2}{\ignorespaces Rolling OOS Evaluation}}{3}{algocf.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Loss Functions}{3}{subsection.3.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Model Confidence Set (Hansen et al.\ 2011)}{4}{subsection.3.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Diebold-Mariano Test (Harvey-Leybourne-Newbold 1997)}{4}{subsection.3.4}\protected@file@percent }
 \@writefile{toc}{\contentsline {section}{\numberline {4}Hyperparameters}{4}{section.4}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Fixed hyperparameters used in all experiments.}}{4}{table.1}\protected@file@percent }
-\newlabel{tab:hyperparam}{{1}{4}{Fixed hyperparameters used in all experiments}{table.1}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Fixed hyperparameters used in all experiments.}}{5}{table.1}\protected@file@percent }
+\newlabel{tab:hyperparam}{{1}{5}{Fixed hyperparameters used in all experiments}{table.1}{}}
 \@writefile{toc}{\contentsline {section}{\numberline {5}Results}{5}{section.5}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}All Models — 30 Symbols, $h\in \{1,5,10\}$}{5}{subsection.5.1}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Out-of-sample MSE — mean $\pm $ std across 30 symbols ($W{=}2000$, $R{=}20$, target: $\log \mathrm  {RV}_5$, $N_{\text  {sym}}{=}30$). Sorted by avg MSE. Bold: lowest mean per horizon. SAS\textsubscript  {q1/q2}: diagonal reservoir, $n{=}200$, $\rho {=}0.95$, $p{=}1$.}}{5}{table.2}\protected@file@percent }
-\newlabel{tab:mse_main}{{2}{5}{Out-of-sample MSE — mean $\pm $ std across 30 symbols ($W{=}2000$, $R{=}20$, target: $\log \mathrm {RV}_5$, $N_{\text {sym}}{=}30$). Sorted by avg MSE. Bold: lowest mean per horizon. SAS\textsubscript {q1/q2}: diagonal reservoir, $n{=}200$, $\rho {=}0.95$, $p{=}1$}{table.2}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Model Confidence Set (MCS, $\alpha {=}0.10$, $B{=}1000$ bootstrap replications, Hansen et al.\ 2011) — frequency of inclusion in the superior set across 30 symbols, sorted by total. A model survives if it cannot be shown to be significantly worse than the best model on that symbol. NLinear is excluded (0 survivals across all horizons).}}{5}{table.3}\protected@file@percent }
-\newlabel{tab:mcs_main}{{3}{5}{Model Confidence Set (MCS, $\alpha {=}0.10$, $B{=}1000$ bootstrap replications, Hansen et al.\ 2011) — frequency of inclusion in the superior set across 30 symbols, sorted by total. A model survives if it cannot be shown to be significantly worse than the best model on that symbol. NLinear is excluded (0 survivals across all horizons)}{table.3}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}SAS as Data-Generating Process — Specification Experiment}{6}{subsection.5.2}\protected@file@percent }
-\@writefile{loa}{\contentsline {algocf}{\numberline {3}{\ignorespaces Extended SAS-DGP Specification Experiment}}{6}{algocf.3}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces DGP specification experiment — Heavy-tailed noise. DGP: SAS\textsubscript  {q2} ($p{=}1$, $n{=}50$, $\rho {=}0.95$), noise $\mathcal  {D} = t(5)$, no clipping, $N_\text  {gen}{=}4{,}000$. Evaluated over $N{=}56$ symbol-seed runs. SAS DGP is the exact oracle floor ($\mathrm  {MSE}_\text  {oracle} = \hat  \sigma ^2\cdot \nu /(\nu {-}2)$). MCS uses $\alpha {=}0.10$ and $B{=}1000$ bootstraps, with losses row-normalised.}}{6}{table.4}\protected@file@percent }
-\newlabel{tab:dgp_t5}{{4}{6}{DGP specification experiment — Heavy-tailed noise. DGP: SAS\textsubscript {q2} ($p{=}1$, $n{=}50$, $\rho {=}0.95$), noise $\mathcal {D} = t(5)$, no clipping, $N_\text {gen}{=}4{,}000$. Evaluated over $N{=}56$ symbol-seed runs. SAS DGP is the exact oracle floor ($\mathrm {MSE}_\text {oracle} = \hat \sigma ^2\cdot \nu /(\nu {-}2)$). MCS uses $\alpha {=}0.10$ and $B{=}1000$ bootstraps, with losses row-normalised}{table.4}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces DGP specification experiment — Gaussian noise. DGP: SAS\textsubscript  {q2} ($p{=}1$, $n{=}50$, $\rho {=}0.95$), noise $\mathcal  {D} = \mathcal  {N}(0, 1)$, no clipping, $N_\text  {gen}{=}4{,}000$. Evaluated over $N{=}69$ symbol-seed runs. SAS DGP is the exact oracle floor ($\mathrm  {MSE}_\text  {oracle} = \hat  \sigma ^2$). MCS uses $\alpha {=}0.10$ and $B{=}1000$ bootstraps, with losses row-normalised.}}{7}{table.5}\protected@file@percent }
-\newlabel{tab:dgp_gaussian}{{5}{7}{DGP specification experiment — Gaussian noise. DGP: SAS\textsubscript {q2} ($p{=}1$, $n{=}50$, $\rho {=}0.95$), noise $\mathcal {D} = \mathcal {N}(0, 1)$, no clipping, $N_\text {gen}{=}4{,}000$. Evaluated over $N{=}69$ symbol-seed runs. SAS DGP is the exact oracle floor ($\mathrm {MSE}_\text {oracle} = \hat \sigma ^2$). MCS uses $\alpha {=}0.10$ and $B{=}1000$ bootstraps, with losses row-normalised}{table.5}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Polynomial Degree Sweep ($p$ and $q$)}{7}{subsection.5.3}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Polynomial degree sweep — Mean Squared Error. Evaluated across all $N{=}30$ symbols. Means for $p=1, q=0$ are heavily inflated by divergences. All SAS models use $n{=}200$ and spectral norm limit $\rho {=}0.95$.}}{7}{table.6}\protected@file@percent }
-\newlabel{tab:pq_sweep_mse}{{6}{7}{Polynomial degree sweep — Mean Squared Error. Evaluated across all $N{=}30$ symbols. Means for $p=1, q=0$ are heavily inflated by divergences. All SAS models use $n{=}200$ and spectral norm limit $\rho {=}0.95$}{table.6}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Polynomial degree sweep — MCS frequency. Evaluated on the stable subset of $N{=}26$ symbols. Losses are row-normalised. $\alpha {=}0.10$, $B{=}1000$ bootstrap replications. Sorted by total survivals.}}{7}{table.7}\protected@file@percent }
-\newlabel{tab:pq_sweep_mcs}{{7}{7}{Polynomial degree sweep — MCS frequency. Evaluated on the stable subset of $N{=}26$ symbols. Losses are row-normalised. $\alpha {=}0.10$, $B{=}1000$ bootstrap replications. Sorted by total survivals}{table.7}{}}
-\gdef \@abspage@last{7}
+\gdef \@abspage@last{5}

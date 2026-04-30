@@ -18,11 +18,10 @@
 \newcommand{\RV}{\mathrm{RV}}
 \newcommand{\E}{\mathbb{E}}
 \newcommand{\R}{\mathbb{R}}
-\newcommand{\hath}{\hat{x}_{t+h}}
+\newcommand{\hath}{\hat{y}_{t+h}}
 \newcommand{\xt}{x_t}
 \newcommand{\st}{s_t}
-\newcommand{\odotop}{\odot}
-\newcommand{\W}{w_h}
+\newcommand{\W}{w}
 
 \title{\textbf{Realised Volatility Forecasting — Multi-Asset Benchmark}\\[4pt]
        \large Direct Multi-Step Models: HAR, NLinear, DLinear, SAS, RNN}
@@ -33,125 +32,156 @@
 \maketitle
 \vspace{-1em}
 
+% ─────────────────────────────────────────────────────────────────────────────
 \section{Setup}
+% ─────────────────────────────────────────────────────────────────────────────
 
-$x_t = \log \RV_t$, z-scored per rolling window $(\mu,\sigma$ frozen until refit$)$.
-Direct multi-step: one model per $h \in \{1, 5, 10\}$.
-Ridge $\alpha \in \{10^k : k \in [-4,5],\;\Delta k{=}0.25\}$ (37 values), 5-fold CV.
+\textbf{Input series.} Either raw $y_t = \RV_t > 0$ (default) or
+log-transformed $y_t = \log\RV_t \in \mathbb{R}$ (\texttt{--log}).
+All internal scaling (z-scoring) is handled inside each model class.
 
+\textbf{Forecasting task.} Direct multi-step: one readout per
+$h \in \{1,5,10\}$ days.  Readouts are ridge-regression with
+$\alpha \in \{10^k : k \in [-4,5],\,\Delta k{=}0.25\}$ (37 values),
+5-fold time-series CV.
+
+% ─────────────────────────────────────────────────────────────────────────────
 \section{Models}
+% ─────────────────────────────────────────────────────────────────────────────
 
 \subsection{HAR — Heterogeneous Autoregressive Model (Corsi 2009)}
 
-\textbf{Features.} Let $\bar{x}^{(w)}_t = \frac{1}{5}\sum_{k=0}^{4}x_{t-k}$
-and $\bar{x}^{(m)}_t = \frac{1}{22}\sum_{k=0}^{21}x_{t-k}$.
+\textbf{Features.} $\bar{y}^{(w)}_t = \tfrac{1}{5}\sum_{k=0}^{4}y_{t-k}$,\quad
+$\bar{y}^{(m)}_t = \tfrac{1}{22}\sum_{k=0}^{21}y_{t-k}$.
 
 \begin{equation}
-  \hat{x}_{t+h} = \alpha + \beta_d\,x_t + \beta_w\,\bar{x}^{(w)}_t
-                         + \beta_m\,\bar{x}^{(m)}_t
+  \hat{y}_{t+h} = \alpha + \beta_d\,y_t + \beta_w\,\bar{y}^{(w)}_t
+                         + \beta_m\,\bar{y}^{(m)}_t
 \end{equation}
 
 \textbf{HAR-OLS}: $\min_\beta \|X\beta - y\|_2^2$.\quad
-\textbf{HAR-Ridge}: column-normalise $[x^{(d)},x^{(w)},x^{(m)}]$; penalise slopes only;
-back-transform $w = w_\text{scaled}/\sigma_\text{col}$.
+\textbf{HAR-Ridge}: column-normalise features; penalise slopes only;
+back-transform coefficients after fit.
 
+% ─────────────────────────────────────────────────────────────────────────────
 \subsection{NLinear and DLinear (Zeng et al.\ 2023)}
 
-Let $\bm{x}_t = (x_{t-L+1},\ldots,x_t)^\top \in \R^L$ be the lookback window.
+Lookback window $\bm{y}_t = (y_{t-L+1},\ldots,y_t)^\top \in \R^L$.
 
-\textbf{NLinear.}
+\textbf{NLinear} — subtract last value (removes level, keeps increments):
 \begin{equation}
-  \tilde{\bm{x}}_t = \bm{x}_t - x_t, \qquad
-  \hat{x}_{t+h} = \tilde{\bm{x}}_t^\top \W + x_t
+  \tilde{\bm{y}}_t = \bm{y}_t - y_t, \qquad
+  \hat{y}_{t+h} = \tilde{\bm{y}}_t^\top \W + y_t
 \end{equation}
 
-\textbf{DLinear.}
+\textbf{DLinear} — trend/seasonality decomposition:
 \begin{equation}
-  \bm{\tau}_t = \mathrm{MA}_k(\bm{x}_t), \quad
-  \bm{\varsigma}_t = \bm{x}_t - \bm{\tau}_t, \qquad
-  \hat{x}_{t+h} = \begin{bmatrix}\bm{\tau}_t \\ \bm{\varsigma}_t\end{bmatrix}^\top \W
+  \bm{\tau}_t = \mathrm{MA}_k(\bm{y}_t), \quad
+  \bm{\varsigma}_t = \bm{y}_t - \bm{\tau}_t, \qquad
+  \hat{y}_{t+h} = \begin{bmatrix}\bm{\tau}_t \\ \bm{\varsigma}_t\end{bmatrix}^\top \W
 \end{equation}
 
+% ─────────────────────────────────────────────────────────────────────────────
 \subsection{GARCH — AR($p$)-GARCH(1,1)}
 
-$x_t = \mu + \sum_{i=1}^{p} \phi_i x_{t-i} + \varepsilon_t$,\quad
-$\sigma^2_t = \omega + \alpha_{\scriptscriptstyle G}\varepsilon^2_{t-1} + \beta_{\scriptscriptstyle G}\sigma^2_{t-1}$.
-Multi-step: iterate variance recursion analytically. QMLE.
+$y_t = \mu + \sum_{i=1}^{p} \phi_i y_{t-i} + \varepsilon_t$,\quad
+$\sigma^2_t = \omega + \alpha_{\scriptscriptstyle G}\varepsilon^2_{t-1}
+            + \beta_{\scriptscriptstyle G}\sigma^2_{t-1}$.
+Multi-step: iterate variance recursion analytically. Estimated by QMLE.
 
+% ─────────────────────────────────────────────────────────────────────────────
 \subsection{SAS — State Affine System}
 
-\textbf{Diagonal basis.} $P_0,\ldots,P_p \in \R^n$,\; $Q_0,\ldots,Q_q \in \R^n$, $z\in\mathbb R$.
+\textbf{Diagonal basis.}
+$P_0,\ldots,P_p \in \R^n$,\; $Q_0,\ldots,Q_q \in \R^n$, input $z\in\mathbb R$.
 
-\vspace{-0.5em}
 \begin{align}
   P(z) &= \mathrm{clip}\!\Bigl(\sum_{d=0}^{p} P_d\,z^d,\;
-           {-1{+}\epsilon},\;{1{-}\epsilon}\Bigr) \in (-1,1)^n
-         \\
+           {-1{+}\epsilon},\;{1{-}\epsilon}\Bigr) \in (-1,1)^n \\
   Q(z) &= \sum_{d=0}^{q} Q_d\,z^d \in \R^n \\
   s_t  &= P(z_t) \odot s_{t-1} + Q(z_t)
-           \label{eq:sas-rec}
 \end{align}
 
-Clipping ensures $|P(z)_i|<1$ (unconditional stability).
-Readout: $\hat{x}_{t+h} = s_t^\top \W$, $W_h$ fitted by ridge regression with 5-fold CV.
+Clipping guarantees $|P(z)_i|<1$ (unconditional stability).
 
-\textit{Transition polynomial $P$.}  Let $\rho$ be the spectral-norm bound and
-$\delta = \max(0.005,\,(1{-}\rho)\cdot 0.3)$ a small headroom margin.
+\textbf{Standard readout.}
+\begin{equation}
+  \hat{y}_{t+h} = s_t^\top \W_h, \qquad
+  \W_h = \operatorname*{arg\,min}_{w} \|S\,w - Y_h\|^2 + \alpha\|w\|^2
+\end{equation}
+where $S \in \R^{(T-p-h)\times n}$ are post-washout states and
+$Y_h \in \R^{T-p-h}$ are z-scored targets $y_{t+h}$.
+
+\textbf{Residual-target variant (SAS\textsubscript{res}).}
+Instead of fitting the readout on the level $y_{t+h}$, fit it on the
+increment $r_{t,h} = y_{t+h} - y_t$ (per-horizon z-scored separately):
+
+\begin{equation}
+  \W_h = \operatorname*{arg\,min}_{w}
+         \bigl\|S\,w - \tilde{r}_h\bigr\|^2 + \alpha\|w\|^2,
+  \qquad \tilde{r}_h = \frac{r_h - \mu_{r,h}}{\sigma_{r,h}}
+\end{equation}
+
+At prediction time reconstruct the level using the anchor $y_t$:
+
+\begin{equation}
+  \hat{r}_{t,h} = \sigma_{r,h}\,(s_t^\top \W_h) + \mu_{r,h},
+  \qquad \hat{y}_{t+h} = y_t + \hat{r}_{t,h}
+\end{equation}
+
+The anchor $y_t > 0$ prevents near-zero predictions and stabilises QLIKE.
+Scalers $(\mu_{r,h}, \sigma_{r,h})$ are computed per horizon on the training
+window and updated at each refit.
+
+\textbf{Initialisation of $P$.}
+Let $\rho$ be the spectral-norm bound and $\delta = \max(0.005,\,(1{-}\rho)\cdot 0.3)$.
 \begin{itemize}\itemsep1pt
-  \item $P_0[i] \overset{\text{iid}}{\sim} \mathcal{U}(-\rho,\,\rho)$ — base
-        eigenvalues spread uniformly to encode timescales from fast-decaying to
-        near-unit-root.
-  \item $P_k[i] \overset{\text{iid}}{\sim} \mathcal{N}\!\bigl(0,\,\delta/5^k\bigr)$
-        for $k \geq 1$ — exponentially shrinking input-modulation terms so that
-        the clip boundary is rarely reached for $|z| \leq 5$.
+  \item $P_0[i] \overset{\text{iid}}{\sim} \mathcal{U}(-\rho,\,\rho)$
+  \item $P_k[i] \overset{\text{iid}}{\sim} \mathcal{N}(0,\,\delta/5^k)$
+        for $k \geq 1$
 \end{itemize}
 
-\textit{Input-drive polynomial $Q$.}  The injection $Q(z_t)$ adds noise with
-variance $\propto \sum_k Q_k[i]^2\,\mathbb{E}[z^{2k}]$.  For $z \sim \mathcal{N}(0,1)$,
-$\mathbb{E}[z^{2k}] = (2k-1)!! = 1\cdot 3\cdot 5\cdots(2k{-}1)$ (double
-factorial).  To keep injection variance roughly uniform across degrees:
+\textbf{Initialisation of $Q$.}
+To keep injection variance uniform across degrees (for $z \sim \mathcal{N}(0,1)$,
+$\mathbb{E}[z^{2k}] = (2k-1)!!$):
 \begin{equation}
   Q_k[i] \overset{\text{iid}}{\sim}
-  \mathcal{N}\!\!\left(0,\;\frac{1}{\sqrt{n\,(2k-1)!!}}\right)
+  \mathcal{N}\!\left(0,\;\frac{1}{\sqrt{n\,(2k-1)!!}}\right)
 \end{equation}
-so $k{=}0,1$ use scale $1/\!\sqrt{n}$ (unchanged from a linear SAS), while
-$k{=}2$ is shrunk by $1/\!\sqrt{3}\approx 0.58$ and $k{=}3$ by
-$1/\!\sqrt{15}\approx 0.26$.  This prevents state explosion for large inputs
-without hand-tuning per-degree scales.
 
-\textbf{Associative structure.} $\ell_t = (P(z_t), Q(z_t))$. Composition rule:
+\textbf{Associative structure.} Composition rule on pairs $\ell_t = (P(z_t),Q(z_t))$:
 \begin{equation}
-  (A_j,\,b_j) \,\circ\, (A_i,\,b_i) \;=\;
+  (A_j,\,b_j) \circ (A_i,\,b_i) =
   \bigl(A_j \odot A_i,\;\;A_j \odot b_i + b_j\bigr)
-  \label{eq:combine}
 \end{equation}
-is associative $\Rightarrow$ parallel divide-and-conquer scan.
+
+This is associative $\Rightarrow$ parallel prefix scan (depth $O(\log T)$
+vs.\ $O(T)$ sequential).
 
 \begin{algorithm}[H]
-\caption{Two-Level Parallel Scan — compute $s_1,\ldots,s_T$ from $z_1,\ldots,z_T$}
+\caption{Two-Level Parallel Scan — compute $s_1,\ldots,s_T$}
 \SetKwInOut{Input}{Input}\SetKwInOut{Output}{Output}
 \Input{Transitions $\ell_1,\ldots,\ell_T$;\; chunk size $B$;\; $s_0 = \bm{0}$}
-\Output{States $s_1,\ldots,s_T$;\; $s_T$}
+\Output{States $s_1,\ldots,s_T$}
 $K \leftarrow \lceil T/B \rceil$; pad to $KB$ \\
-\textbf{Phase 1} (vmap over $K$ chunks)\;
-\quad $\forall\,k:\;(A^\text{intra}_{k,\cdot},\,b^\text{intra}_{k,\cdot})
-\leftarrow \textsc{AssocScan}(\circ,\;\ell_{kB+1},\ldots,\ell_{(k+1)B})$ \\
-\textbf{Phase 2} (inter-chunk scan over $K$ endpoints)\;
-\quad $(A^\text{inter},\,b^\text{inter})
-\leftarrow \textsc{AssocScan}(\circ,\;(A^\text{intra}_{1,B},b^\text{intra}_{1,B}),\ldots)$ \\
-\textbf{Phase 3} (carry for chunk $k \geq 1$)\;
-\quad $c_0 = s_0$;\;
-$c_k = A^\text{inter}_{k-1} \odot s_0 + b^\text{inter}_{k-1}$ \\
-\textbf{Phase 4} (vmap over $K$ chunks)\;
-\quad $\forall\,k,j:\;s_{kB+j} = A^\text{intra}_{k,j} \odot c_k + b^\text{intra}_{k,j}$
+\textbf{Phase 1} (parallel over $K$ chunks):
+  $(A^\text{intra}_{k,\cdot},b^\text{intra}_{k,\cdot})
+  \leftarrow \textsc{AssocScan}(\circ,\;\ell_{kB+1},\ldots,\ell_{(k+1)B})$ \\
+\textbf{Phase 2} (inter-chunk scan over $K$ endpoints):
+  $(A^\text{inter},b^\text{inter})
+  \leftarrow \textsc{AssocScan}(\circ,\;(A^\text{intra}_{1,B},b^\text{intra}_{1,B}),\ldots)$ \\
+\textbf{Phase 3} (carry):
+  $c_0 = s_0$;\;
+  $c_k = A^\text{inter}_{k-1} \odot s_0 + b^\text{inter}_{k-1}$ \\
+\textbf{Phase 4} (parallel over $K$ chunks):
+  $s_{kB+j} = A^\text{intra}_{k,j} \odot c_k + b^\text{intra}_{k,j}$
 \end{algorithm}
 
-Depth $O(\log T)$ vs.\ $O(T)$ sequential.
-
+% ─────────────────────────────────────────────────────────────────────────────
 \subsection{RNN — LSTM / GRU / LRU}
 
-Readout: $\hat{x}_{t+h} = \text{Linear}_h(h_T)$, one head per $h$.
-Training: Adam, early stopping (patience=20, val=20\% chronological).
+Readout: $\hat{y}_{t+h} = \text{Linear}_h(h_T)$, one head per $h$.
+Training: Adam, early stopping (patience = 20, val = 20\% chronological).
 
 \textbf{LRU} (Orvieto et al.\ 2023):
 \begin{equation}
@@ -159,45 +189,105 @@ Training: Adam, early stopping (patience=20, val=20\% chronological).
   \qquad \sigma(\nu) \in (0,1)^d
 \end{equation}
 
-
+% ─────────────────────────────────────────────────────────────────────────────
 \section{Evaluation Protocol}
+% ─────────────────────────────────────────────────────────────────────────────
+
+\subsection{Rolling Out-of-Sample Loop}
+
+Each model owns its preprocessing (z-scoring, log-transform).
+The loop passes raw series values unchanged.
 
 \begin{algorithm}[H]
-\caption{Rolling Out-of-Sample Evaluation}
+\caption{Rolling OOS Evaluation}
 \SetKwInOut{Input}{Input}\SetKwInOut{Output}{Output}
-\Input{Series $x_1,\ldots,x_T$; window $W$; refit frequency $R$; horizons $\mathcal{H}$}
-\Output{Squared-error sequences $\{e^{(h)}_{t,m}\}$ for each model $m$, horizon $h$}
-$({\mu}, {\sigma}) \leftarrow (0, 1)$\;
+\Input{Series $y_1,\ldots,y_T$; window $W$; refit freq $R$; horizons $\mathcal{H}$}
+\Output{Records $\{(\hat{y}_{t+h,m},\,y_{t+h},\,\mathrm{sqerr},\,\mathrm{qlike})\}$}
 \For{$t = W$ \KwTo $T - \max(\mathcal{H})$}{
-  $\text{train} \leftarrow x_{t-W:t}$\;
-  \If{$t \bmod R = 0$}{
-    $(\mu,\sigma) \leftarrow \textsc{FitScaler}(\text{train})$\;
-    $\tilde{\text{train}} \leftarrow (\text{train} - \mu)/\sigma$\;
-    \ForEach{model $m$}{$m.\textsc{Fit}(\tilde{\text{train}},\,\mathcal{H})$}
+  \If{steps since last refit $\geq R$}{
+    \ForEach{model $m$}{$m.\textsc{Fit}(y_{t-W:t},\;\mathcal{H})$} \tcp*{model z-scores internally}
   }
-  $z_t \leftarrow (x_t - \mu)/\sigma$\;
-  \ForEach{model $m$, horizon $h \in \mathcal{H}$}{
-    $\hat{z}_{t+h} \leftarrow m.\textsc{Predict}(h)$\;
-    $e^{(h)}_{t,m} \leftarrow (\hat{z}_{t+h} - z_{t+h})^2$\;
+  \ForEach{model $m$}{$m.\textsc{Update}(y_t)$} \tcp*{advance state to $t$}
+  \ForEach{model $m$, $h \in \mathcal{H}$}{
+    $\hat{y}_{t+h} \leftarrow m.\textsc{Predict}(h)$ \tcp*{in original scale}
+    record $\bigl(\hat{y}_{t+h},\;y_{t+h},\;
+      (\hat{y}_{t+h}-y_{t+h})^2,\;
+      \mathcal{L}(\hat{y}_{t+h},y_{t+h})\bigr)$\;
   }
-  \ForEach{model $m$}{$m.\textsc{Update}(z_t)$}
 }
 \end{algorithm}
 
-\textbf{Model Confidence Set (Hansen et al.\ 2011).}
-$L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol dominance.
+\subsection{Loss Functions}
+
+\textbf{Mean Squared Error.}
+\begin{equation}
+  \mathrm{MSE}^{(h)}_m = \frac{1}{T_{\mathrm{oos}}}
+    \sum_{t=W}^{T-h} \bigl(\hat{y}_{t+h,m} - y_{t+h}\bigr)^2
+\end{equation}
+
+\textbf{QLIKE} (Patton 2011) — level-space ($y_t > 0$, default):
+\begin{equation}
+  \mathcal{L}(y,\hat{y}) = \frac{y}{\hat{y}} - \log\frac{y}{\hat{y}} - 1
+  \qquad (\hat{y} \text{ clipped to } 10^{-8})
+\end{equation}
+$\mathcal{L} \geq 0$ with minimum 0 at $\hat{y}=y$.
+Scale-free: $\mathcal{L}(ky,k\hat{y}) = \mathcal{L}(y,\hat{y})$.
+Strongly penalises underforecasting ($\hat{y} \ll y$).
+
+\textbf{QLIKE — log-space} (\texttt{--log} mode, $y_t \in \mathbb{R}$):
+Apply the level formula to $e^{y_t},\,e^{\hat{y}_t}$:
+\begin{equation}
+  \mathcal{L}_{\log}(y,\hat{y})
+    = \frac{e^{\hat{y}}}{e^{y}} - \left(y - \hat{y}\right) - 1
+    = e^{\hat{y}-y} + (\hat{y}-y) - 1
+\end{equation}
+Valid for any finite $y,\hat{y}$ (no positivity constraint required).
+
+\subsection{Model Confidence Set (Hansen et al.\ 2011)}
+
+Given loss matrix $L \in \R^{T\times M}$ (raw squared errors, one column per model):
 \begin{enumerate}\itemsep0pt
-  \item $d_{t,m} = L_{t,m} - \bar{L}_t$
-  \item $T_R = \max_m \bar{d}_m / \hat\sigma_m$ \quad ($\hat\sigma_m$: circular block bootstrap, $B$ reps)
-  \item Eliminate worst model if $p < \alpha$; repeat until $H_0$ not rejected.
-  \item Surviving set = MCS$_\alpha$.
+  \item $d_{t,ij} = L_{t,i} - L_{t,j}$;\quad
+        $\bar{d}_{ij} = T^{-1}\!\sum_t d_{t,ij}$
+  \item $T_R = \max_{m\neq b}\; \bar{d}_{mb}/\hat{\sigma}_{mb}$
+        \quad ($\hat{\sigma}^2_{mb}$: circular block bootstrap, $B$ reps,
+        block width $w = \lfloor T^{1/3} \rfloor$)
+  \item Eliminate the worst model if $p\text{-value}(T_R) < \alpha$; repeat.
+  \item $\mathrm{MCS}_\alpha$ = surviving set.
 \end{enumerate}
 
-\textbf{MCS Frequency.} Run MCS per symbol per horizon; report $c_m^{(h)}/N$.
+\textbf{MCS Frequency.} Run MCS independently per symbol per horizon;
+report survival rate $c_m^{(h)} / N_{\mathrm{sym}}$.
 
-\newpage
+\subsection{Diebold-Mariano Test (Harvey-Leybourne-Newbold 1997)}
 
+For each (model, horizon, symbol), test whether a challenger beats the benchmark.
+\textbf{Raw loss differences} are used for both MSE and QLIKE:
+\begin{equation}
+  d_t = \mathcal{L}_{t,\mathrm{challenger}} - \mathcal{L}_{t,\mathrm{benchmark}}
+\end{equation}
+$H_0\!: \E[d_t]=0$;\; $H_1^{<}\!: \E[d_t]<0$ (challenger better).
+
+\textbf{HAC variance} with Newey-West, $h-1$ lags
+(MA($h-1$) structure of $h$-step errors):
+\begin{equation}
+  \hat{V} = \hat{\gamma}_0 + 2\sum_{k=1}^{h-1}
+            \left(1 - \frac{k}{h}\right)\hat{\gamma}_k,
+  \qquad \hat{\gamma}_k = T^{-1}\sum_t (d_t-\bar d)(d_{t-k}-\bar d)
+\end{equation}
+
+\textbf{HLN finite-sample correction}:
+\begin{equation}
+  \mathrm{DM}^* = \sqrt{\frac{T+1-2h+h(h-1)/T}{T}}\;\cdot\;
+                  \frac{\bar{d}}{\sqrt{\hat{V}/T}}
+  \sim t_{T-1}
+\end{equation}
+
+Report: fraction of symbols where $p^* < \alpha$ (one-sided), per horizon.
+
+% ─────────────────────────────────────────────────────────────────────────────
 \section{Hyperparameters}
+% ─────────────────────────────────────────────────────────────────────────────
 
 \begin{table}[ht]
 \centering
@@ -228,12 +318,13 @@ $L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol 
   & AR lags $p$         & 5 \\
   & Estimation          & QMLE \\
 \midrule
-\multirow{5}{*}{SAS (diagonal)}
+\multirow{6}{*}{SAS (diagonal)}
   & Reservoir size $n$            & 200 \\
   & Spectral norm $\rho$          & 0.95 \\
   & $P$-polynomial degree $p$     & 1 \\
   & $Q$-polynomial degree $q$     & 1 (SAS\textsubscript{q1}) or 2 (SAS\textsubscript{q2}) \\
   & Washout                       & 50 steps \\
+  & Residual-target               & off (SAS) / on (SAS\textsubscript{res}) \\
 \midrule
 \multirow{5}{*}{RNN (GRU)}
   & Hidden size     & 32 \\
@@ -242,16 +333,10 @@ $L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol 
   & Epochs (max)    & 500 \\
   & Early stopping  & patience = 20, val = 20\% \\
 \midrule
-\multirow{4}{*}{MdSAS}
-  & Groups $(D{+}1)$         & 2 (degrees 0,1) or 3 (degrees 0,1,2) \\
-  & $n$ per group            & 50 or 100 \\
-  & Spectral norm $\rho$     & $\{0.90,\,0.95\}$ \\
-  & $\alpha$ grid (grouped)  & 7-value subset ($\Delta k {=} 1.5$, 49 combos) \\
-\midrule
 \multirow{3}{*}{Ridge grid}
   & Range    & $10^k$, $k \in [-4, 5]$ \\
-  & Spacing (single-$\alpha$)  & $\Delta k = 0.25$, 37 values \\
-  & Spacing (grouped)         & $\Delta k = 1.5$,  7 values (49 combos/2 groups) \\
+  & Spacing  & $\Delta k = 0.25$,\; 37 values \\
+  & CV folds & 5 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -259,239 +344,5 @@ $L \in \R^{T \times M}$, row-normalised by cross-model mean to prevent high-vol 
 \newpage
 \section{Results}
 
-\subsection{All Models — 30 Symbols, $h\in\{1,5,10\}$}
-
-\begin{table}[ht]
-\centering
-\caption{Out-of-sample MSE — mean $\pm$ std across 30 symbols
-         ($W{=}2000$, $R{=}20$, target: $\log\mathrm{RV}_5$, $N_{\text{sym}}{=}30$).
-         Sorted by avg MSE. Bold: lowest mean per horizon.
-         SAS\textsubscript{q1/q2}: diagonal reservoir, $n{=}200$, $\rho{=}0.95$, $p{=}1$.}
-\label{tab:mse_main}
-\setlength{\tabcolsep}{8pt}
-\begin{tabular}{lcccr}
-\toprule
-Model & $h=1$ & $h=5$ & $h=10$ & avg \\
-\midrule
-SAS\textsubscript{q2}
-  & $\mathbf{0.3958 \pm 0.0718}$
-  & $0.5070 \pm 0.0934$
-  & $0.5837 \pm 0.1145$
-  & $\mathbf{0.4955}$ \\
-HAR
-  & $0.4002 \pm 0.0721$
-  & $0.5090 \pm 0.0928$
-  & $\mathbf{0.5827 \pm 0.1053}$
-  & $0.4973$ \\
-SAS\textsubscript{q1}
-  & $0.3973 \pm 0.0713$
-  & $\mathbf{0.5065 \pm 0.0913}$
-  & $0.5914 \pm 0.1058$
-  & $0.4984$ \\
-DLinear
-  & $0.4001 \pm 0.0720$
-  & $0.5116 \pm 0.0927$
-  & $0.5855 \pm 0.1057$
-  & $0.4991$ \\
-NLinear
-  & $0.4032 \pm 0.0741$
-  & $0.5191 \pm 0.0973$
-  & $0.5977 \pm 0.1130$
-  & $0.5067$ \\
-GRU
-  & $0.4200 \pm 0.0848$
-  & $0.5410 \pm 0.1107$
-  & $0.6249 \pm 0.1323$
-  & $0.5287$ \\
-GARCH
-  & $0.4104 \pm 0.0741$
-  & $0.5459 \pm 0.0976$
-  & $0.6466 \pm 0.1182$
-  & $0.5343$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-% ── MCS frequency table ───────────────────────────────────────────────────────
-\begin{table}[ht]
-\centering
-\caption{Model Confidence Set (MCS, $\alpha{=}0.10$, $B{=}1000$ bootstrap replications,
-         Hansen et al.\ 2011) — frequency of inclusion in the superior set across
-         30 symbols, sorted by total.  A model survives if it cannot be shown to be
-         significantly worse than the best model on that symbol.
-         NLinear is excluded (0 survivals across all horizons).}
-\label{tab:mcs_main}
-\setlength{\tabcolsep}{9pt}
-\begin{tabular}{lccccc}
-\toprule
-Model & $h=1$ & $h=5$ & $h=10$ & total & avg MSE \\
-\midrule
-HAR
-  & $15/30\ (50\%)$
-  & $29/30\ (97\%)$
-  & $30/30\ (100\%)$
-  & $74/90$
-  & $0.4973$ \\
-SAS\textsubscript{q1}
-  & $29/30\ (97\%)$
-  & $24/30\ (80\%)$
-  & $19/30\ (63\%)$
-  & $72/90$
-  & $0.4984$ \\
-SAS\textsubscript{q2}
-  & $18/30\ (60\%)$
-  & $14/30\ (47\%)$
-  & $9/30\ (30\%)$
-  & $41/90$
-  & $0.4955$ \\
-DLinear
-  & $12/30\ (40\%)$
-  & $11/30\ (37\%)$
-  & $14/30\ (47\%)$
-  & $37/90$
-  & $0.4991$ \\
-GRU
-  & $0/30\ (0\%)$
-  & $2/30\ (7\%)$
-  & $1/30\ (3\%)$
-  & $3/90$
-  & $0.5287$ \\
-GARCH
-  & $1/30\ (3\%)$
-  & $0/30\ (0\%)$
-  & $0/30\ (0\%)$
-  & $1/90$
-  & $0.5343$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\newpage 
-\subsection{SAS as Data-Generating Process — Specification Experiment}
-
-\begin{algorithm}[H]
-\caption{Extended SAS-DGP Specification Experiment}
-\SetKwInOut{Input}{Input}
-\SetKwInOut{Output}{Output}
-\Input{Set of real-data symbols $\mathcal{Y}$;\; Noise distribution $\mathcal{D}$;\; Number of steps $N_\text{gen}$;\; Set of seeds $\mathcal{M} = \{s_1, s_2, s_3\}$}
-\Output{Synthetic series $Z^{(y,m)}$ for each symbol $y \in \mathcal{Y}$ and seed $m \in \mathcal{M}$}
-\BlankLine
-\For{each symbol $y \in \mathcal{Y}$}{
-  \tcp{Step 1: Fit SASq2 on full real series}
-  Fit $\text{SAS}_{q=2}$ on the full observation sequence $y_{1:T}$\;
-  Extract reservoir matrices $(P, Q)$, readout $W_1$, terminal state $s_T$, and noise scale $\hat\sigma$\;
-  \BlankLine
-  \For{each seed $m \in \mathcal{M}$}{
-    \tcp{Step 2: Autoregressive generation from terminal state}
-    Set random number generator seed to $m$\;
-    $s \leftarrow s_T$\;
-    Initialize empty sequence $Z^{(y,m)}$\;
-    \For{$t = 1$ \KwTo $N_\text{gen}$}{
-      $\varepsilon \sim \mathcal{D}$\;
-      $z_t \leftarrow s^\top W_1 + \hat\sigma\,\varepsilon$\;
-      $s   \leftarrow P(z_t)\odot s + Q(z_t)$\;
-      Append $z_t$ to $Z^{(y,m)}$\;
-    }
-  }
-}
-\end{algorithm}
-
-\begin{table}[ht]
-\centering
-\caption{DGP specification experiment — Heavy-tailed noise.
-         DGP: SAS\textsubscript{q2} ($p{=}1$, $n{=}50$, $\rho{=}0.95$),
-         noise $\mathcal{D} = t(5)$, no clipping, $N_\text{gen}{=}4{,}000$.
-         Evaluated over $N{=}56$ symbol-seed runs.
-         SAS DGP is the exact oracle floor ($\mathrm{MSE}_\text{oracle} = \hat\sigma^2\cdot\nu/(\nu{-}2)$).
-         MCS uses $\alpha{=}0.10$ and $B{=}1000$ bootstraps, with losses row-normalised.}
-\label{tab:dgp_t5}
-\setlength{\tabcolsep}{10pt}
-\begin{tabular}{lccc}
-\toprule
-Model & MSE ($h=1$) & MCS Survival & MCS \% \\
-\midrule
-\textbf{SAS DGP} (oracle)        & $\mathbf{0.5084 \pm 0.1207}$ & $30 / 56$ & $54\%$ \\
-\texttt{SAS\_same\_fixed$\lambda$} & $0.5127 \pm 0.1228$          & $\mathbf{49 / 56}$ & $\mathbf{88\%}$ \\
-\texttt{SAS\_same\_cv$\lambda$}    & $0.5129 \pm 0.1223$          & $48 / 56$ & $86\%$ \\
-\texttt{SAS\_diff}                 & $0.5173 \pm 0.1312$          & $28 / 56$ & $50\%$ \\
-\texttt{SAS\_q1}                   & $0.5213 \pm 0.1285$          & $41 / 56$ & $73\%$ \\
-HAR                                & $0.5271 \pm 0.1436$          & $2 / 56$  & $4\%$ \\
-DLinear                            & $0.5286 \pm 0.1449$          & $1 / 56$  & $2\%$ \\
-GARCH                              & $0.5327 \pm 0.1423$          & $0 / 56$  & $0\%$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[ht]
-\centering
-\caption{DGP specification experiment — Gaussian noise.
-         DGP: SAS\textsubscript{q2} ($p{=}1$, $n{=}50$, $\rho{=}0.95$),
-         noise $\mathcal{D} = \mathcal{N}(0, 1)$, no clipping, $N_\text{gen}{=}4{,}000$.
-         Evaluated over $N{=}69$ symbol-seed runs.
-         SAS DGP is the exact oracle floor ($\mathrm{MSE}_\text{oracle} = \hat\sigma^2$).
-         MCS uses $\alpha{=}0.10$ and $B{=}1000$ bootstraps, with losses row-normalised.}
-\label{tab:dgp_gaussian}
-\setlength{\tabcolsep}{10pt}
-\begin{tabular}{lccc}
-\toprule
-Model & MSE ($h=1$) & MCS Survival & MCS \% \\
-\midrule
-\textbf{SAS DGP} (oracle)        & $\mathbf{0.3015 \pm 0.0678}$ & $\mathbf{65 / 69}$ & $\mathbf{94\%}$ \\
-\texttt{SAS\_same\_fixed$\lambda$} & $0.3898 \pm 0.0832$          & $10 / 69$          & $14\%$ \\
-\texttt{SAS\_diff}                 & $0.3906 \pm 0.0833$          & $4 / 69$           & $6\%$ \\
-\texttt{SAS\_same\_cv$\lambda$}    & $0.3913 \pm 0.0820$          & $9 / 69$           & $13\%$ \\
-HAR                                & $0.3917 \pm 0.0842$          & $1 / 69$           & $1\%$ \\
-DLinear                            & $0.3920 \pm 0.0839$          & $0 / 69$           & $0\%$ \\
-GARCH                              & $0.4005 \pm 0.0870$          & $0 / 69$           & $0\%$ \\
-\texttt{SAS\_q1}                   & $0.4810 \pm 0.7447$          & $10 / 69$          & $14\%$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\newpage
-
-\subsection{Polynomial Degree Sweep ($p$ and $q$)}
-
-\begin{table}[ht]
-\centering
-\caption{Polynomial degree sweep — Mean Squared Error.
-         Evaluated across all $N{=}30$ symbols. Means for $p=1, q=0$ are heavily inflated by divergences.
-         All SAS models use $n{=}200$ and spectral norm limit $\rho{=}0.95$.}
-\label{tab:pq_sweep_mse}
-\setlength{\tabcolsep}{8pt}
-\begin{tabular}{lcccc}
-\toprule
-Model & $h=1$ & $h=5$ & $h=10$ & avg \\
-\midrule
-SAS ($p{=}1, q{=}2$) & $0.3400 \pm 0.0632$ & $0.4860 \pm 0.0896$ & $0.5713 \pm 0.1141$ & $0.4658$ \\
-HAR                  & $0.3427 \pm 0.0628$ & $0.4856 \pm 0.0869$ & $0.5695 \pm 0.1044$ & $0.4659$ \\
-SAS ($p{=}1, q{=}1$) & $0.3410 \pm 0.0618$ & $0.4843 \pm 0.0858$ & $0.5783 \pm 0.1045$ & $0.4679$ \\
-SAS ($p{=}0, q{=}1$) & $0.3404 \pm 0.0621$ & $0.4965 \pm 0.0896$ & $0.5687 \pm 0.1050$ & $0.4685$ \\
-SAS ($p{=}0, q{=}2$) & $0.3400 \pm 0.0632$ & $0.4944 \pm 0.0970$ & $0.5759 \pm 0.1156$ & $0.4701$ \\
-SAS ($p{=}1, q{=}0$) & $0.4937 \pm 0.3138$ & $2.1042 \pm 4.8994$ & $0.7790 \pm 0.5379$ & $1.1257$ \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{table}[ht]
-\centering
-\caption{Polynomial degree sweep — MCS frequency.
-         Evaluated on the stable subset of $N{=}26$ symbols.
-         Losses are row-normalised. $\alpha{=}0.10$, $B{=}1000$ bootstrap replications. Sorted by total survivals.}
-\label{tab:pq_sweep_mcs}
-\setlength{\tabcolsep}{8pt}
-\begin{tabular}{lccccc}
-\toprule
-Model & $h=1$ & $h=5$ & $h=10$ & Total Survivals & avg MSE \\
-\midrule
-SAS ($p{=}1, q{=}1$) & $26/26\ (100\%)$ & $25/26\ (96\%)$ & $25/26\ (96\%)$ & $76$ & $0.4683$ \\
-SAS ($p{=}0, q{=}1$) & $23/26\ (88\%)$  & $21/26\ (81\%)$ & $20/26\ (77\%)$ & $64$ & $0.4688$ \\
-SAS ($p{=}1, q{=}2$) & $18/26\ (69\%)$  & $17/26\ (65\%)$ & $15/26\ (58\%)$ & $50$ & $0.4659$ \\
-SAS ($p{=}0, q{=}2$) & $19/26\ (73\%)$  & $16/26\ (62\%)$ & $13/26\ (50\%)$ & $48$ & $0.4681$ \\
-SAS ($p{=}1, q{=}0$) & $0/26\ (0\%)$    & $3/26\ (12\%)$  & $3/26\ (12\%)$  & $6$  & $0.6570$ \\
-HAR                  & $2/26\ (8\%)$    & $0/26\ (0\%)$   & $0/26\ (0\%)$   & $2$  & $0.4659$ \\
-\bottomrule
-\end{tabular}
-\end{table}
 
 \end{document}

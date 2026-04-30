@@ -1,1 +1,0 @@
-v2 after the refactorisation to handle non log target and log input for sas.

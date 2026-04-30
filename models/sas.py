@@ -170,33 +170,41 @@ class SASForecaster(BaseForecaster):
     """
     def __init__(
         self,
-        n_reservoir:   int   = 100,
-        basis                = "diagonal",
-        spectral_norm: float = 0.9,
-        p_degree:      int   = 1,
-        q_degree:      int   = 1,
-        washout:       int   = 50,
-        chunk_size:    int   = 64,
-        n_cv_folds:    int   = 3,
-        seed:          int   = 42,
-        alphas               = None,
-        apply_log:     bool  = False,
-        input_scale:   float = 4.0,
-        clip:          bool  = True,
-        target_log:    bool  = False,
+        n_reservoir:     int   = 100,
+        basis                  = "diagonal",
+        spectral_norm:   float = 0.9,
+        p_degree:        int   = 1,
+        q_degree:        int   = 1,
+        washout:         int   = 50,
+        chunk_size:      int   = 64,
+        n_cv_folds:      int   = 3,
+        seed:            int   = 42,
+        alphas                 = None,
+        apply_log:       bool  = False,
+        input_scale:     float = 4.0,
+        clip:            bool  = True,
+        target_log:      bool  = False,
+        residual_target: bool  = False,
     ):
-        self.n_reservoir = n_reservoir
-        self.washout     = washout
-        self.chunk_size  = chunk_size
-        self.n_cv_folds  = n_cv_folds
-        self.seed        = seed
-        self.alphas      = list(alphas) if alphas is not None else _ALPHAS
-        
+        self.n_reservoir     = n_reservoir
+        self.washout         = washout
+        self.chunk_size      = chunk_size
+        self.n_cv_folds      = n_cv_folds
+        self.seed            = seed
+        self.alphas          = list(alphas) if alphas is not None else _ALPHAS
+
         # Data Pipeline Controls
-        self.apply_log   = apply_log
-        self.target_log  = target_log
-        self.input_scale = input_scale
-        self.clip        = clip 
+        self.apply_log       = apply_log
+        self.target_log      = target_log
+        self.input_scale     = input_scale
+        self.clip            = clip
+
+        # Residual-target mode: fit readout on (y_{t+h} - y_t) and add anchor
+        # at prediction time.  Anchor stays positive → improves QLIKE stability.
+        self.residual_target = residual_target
+        self._anchor_last:  float = 0.0   # last known target value (raw/log scale)
+        self._mu_resid:     dict  = {}    # per-horizon residual mean
+        self._sigma_resid:  dict  = {}    # per-horizon residual std
 
         if isinstance(basis, str):
             _map = {"diagonal": DiagonalPoly, "linear": LinearPoly, "trigo": TrigoPoly}
@@ -225,9 +233,13 @@ class SASForecaster(BaseForecaster):
             target_raw = self._to_log(history)
         else:
             target_raw = history
-            
+
         self._mu_target, self._sigma_target = self._fit_scaler(target_raw)
         Y_z = self._zscore(target_raw, self._mu_target, self._sigma_target).astype(np.float32)
+
+        # Store anchor = last training value in target space (raw or log).
+        # Used by residual_target mode at predict time.
+        self._anchor_last = float(target_raw[-1])
 
         # 2. Prepare Input Data
         if self.apply_log:
@@ -257,18 +269,32 @@ class SASForecaster(BaseForecaster):
         states_np      = np.array(states, dtype=np.float32)
         self._s_last   = np.array(s_last, dtype=np.float32)
 
-        n = self.n_reservoir
+        n  = self.n_reservoir
+        wo = self.washout
         self._W = {}
         self.alpha_log_: dict[int, float] = {}
-        
+        self._mu_resid    = {}
+        self._sigma_resid = {}
+
         for h in horizons:
-            S = states_np[self.washout: T - h]
-            Y = Y_z      [self.washout + h: T]
+            S = states_np[wo: T - h]
             if len(S) < 5:
                 self._W[h] = np.zeros(n, dtype=np.float32)
                 continue
-            alpha            = _ridge_cv(S, Y, self.n_cv_folds, self.alphas)
-            self._W[h]       = _ridge_fit(S, Y, alpha).astype(np.float32)
+
+            if self.residual_target:
+                # Target = y_{t+h} - y_t  (in raw/log target space)
+                R_raw = (target_raw[wo + h: T]
+                         - target_raw[wo    : T - h])
+                mu_r, sigma_r          = self._fit_scaler(R_raw)
+                self._mu_resid[h]      = mu_r
+                self._sigma_resid[h]   = sigma_r
+                Y_h = self._zscore(R_raw, mu_r, sigma_r).astype(np.float32)
+            else:
+                Y_h = Y_z[wo + h: T]
+
+            alpha              = _ridge_cv(S, Y_h, self.n_cv_folds, self.alphas)
+            self._W[h]         = _ridge_fit(S, Y_h, alpha).astype(np.float32)
             self.alpha_log_[h] = alpha
 
         return self
@@ -277,23 +303,44 @@ class SASForecaster(BaseForecaster):
         x_raw = float(x)
         if self.apply_log:
             x_raw = self._to_log_scalar(x_raw)
-            
+
         x_z = float(self._zscore(x_raw, self._mu_input, self._sigma_input))
-        
+
         if self.clip:
             x_u = float(np.clip(x_z / self.input_scale, -1.0, 1.0))
         else:
             x_u = float(x_z / self.input_scale)
-            
+
         z = jnp.array([x_u], dtype=jnp.float32)
         s_new = _step_once(self._basis, jnp.array(self._s_last), z)
         self._s_last = np.array(s_new, dtype=np.float32)
+
+        # Track anchor for residual_target mode:
+        # store last known value in target space (log or level).
+        if self.residual_target:
+            x_target = float(x)
+            if self.target_log:
+                x_target = self._to_log_scalar(x_target)
+            self._anchor_last = x_target
+
         return self
 
     def predict(self, h: int) -> float:
-        y_z_target = float(self._s_last @ self._W[h])
-        y_unscaled = float(self._unzscore(y_z_target, self._mu_target, self._sigma_target))
-        
+        raw_out = float(self._s_last @ self._W[h])
+
+        if self.residual_target:
+            # Unscale the predicted increment, then add the last known anchor.
+            r = float(self._unzscore(raw_out,
+                                     self._mu_resid[h],
+                                     self._sigma_resid[h]))
+            y = self._anchor_last + r
+            if self.target_log:
+                return float(np.exp(y))
+            return float(y)
+
+        y_unscaled = float(self._unzscore(raw_out,
+                                          self._mu_target,
+                                          self._sigma_target))
         if self.target_log:
             return float(np.exp(y_unscaled))
         return y_unscaled
